@@ -1,7 +1,7 @@
 {
   "name": "@solomag/lunatic-appearance",
-  "version": "0.2.2",
-  "description": "Lunatic Appearance \u2014 standalone appearance tokens and HSV/alpha editor for Lunatic UI",
+  "version": "0.2.3",
+  "description": "Colour editor for the Luna Settings page (HSV + alpha, live preview, save/reset); can recolour all of TIDAL through a theme palette.",
   "author": {
     "name": "Solomag"
   },

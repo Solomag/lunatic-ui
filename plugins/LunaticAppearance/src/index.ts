@@ -12,4 +12,4 @@ const unlisten = onLunaticAppearanceChange(() => applyAppearance(lunaticAppearan
 unloads.add(unlisten);
 unloads.add(unloadAppearance);
 
-trace.log("Lunatic Appearance 0.2.2 loaded");
+trace.log("Lunatic Appearance 0.2.3 loaded");

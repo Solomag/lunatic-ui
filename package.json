@@ -1,6 +1,6 @@
 {
 	"name": "lunatic",
-	"description": "Lunatic: a TIDAL-native settings UI and appearance editor for TidaLuna and TidaLunar",
+	"description": "Lunatic: a TIDAL-native settings page and colour editor for TidaLuna and TidaLunar",
 	"type": "module",
 	"scripts": {
 		"watch": "concurrently \"pnpm:build --watch\" pnpm:serve",
