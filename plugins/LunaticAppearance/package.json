@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/lunatic-appearance",
+  "version": "0.2.2",
+  "description": "Lunatic Appearance \u2014 standalone appearance tokens and HSV/alpha editor for Lunatic UI",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.ts",
+  "type": "module"
+}

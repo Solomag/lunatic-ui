@@ -1,0 +1,13 @@
+diff --git a/tidal/index.d.ts b/tidal/index.d.ts
+index f91ea3150b9e418a1896afe868243a5f597db0e0..09a825fb0457367da582b5e2c16fa6c954426d9c 100644
+--- a/tidal/index.d.ts
++++ b/tidal/index.d.ts
+@@ -64048,7 +64048,7 @@ export type CoreState = {
+ 	player: {
+ 		activePlayer: Player;
+ 		currentStreamingSessionId: string | null;
+-	}k;
++	};
+ 	policy: PolicyState;
+ 	router?: RouterState;
+ 	search: SearchState;

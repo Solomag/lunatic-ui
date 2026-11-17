@@ -1,0 +1,31 @@
+name: Release
+
+# Builds the plugins and publishes dist/ (store.json + each plugin's .mjs/.json) as the
+# "latest" GitHub release, which is the URL users add as a store. Runs on a v* tag or by hand.
+on:
+  workflow_dispatch:
+  push:
+    tags: ["v*"]
+
+permissions:
+  contents: write
+
+jobs:
+  release:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: pnpm/action-setup@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 24
+          cache: pnpm
+      - run: pnpm install
+      - run: pnpm typecheck
+      - run: pnpm build
+      - name: Publish dist/ as the "latest" release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release delete latest --yes --cleanup-tag || true
+          gh release create latest dist/* --title "Latest release" --notes "Built from ${GITHUB_SHA::7}. Add https://github.com/${GITHUB_REPOSITORY}/releases/download/latest/store.json as a store in Luna."

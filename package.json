@@ -1,0 +1,48 @@
+{
+	"name": "lunatic",
+	"description": "Lunatic: a TIDAL-native settings UI and appearance editor for TidaLuna and TidaLunar",
+	"type": "module",
+	"scripts": {
+		"watch": "concurrently \"pnpm:build --watch\" pnpm:serve",
+		"build": "rimraf ./dist && tsx esbuild.config.ts",
+		"serve": "http-server ./dist -p 3000 -s --cors -c-1",
+		"typecheck": "node scripts/typecheck.mjs"
+	},
+	"devDependencies": {
+		"@emotion/react": "^11.14.0",
+		"@emotion/styled": "^11.14.1",
+		"@mui/icons-material": "^9.5.0",
+		"@mui/material": "^9.5.0",
+		"@octokit/openapi-types": "^28.0.0",
+		"@types/node": "^25.0.9",
+		"@types/react": "^19.2.8",
+		"@types/react-dom": "^19.2.3",
+		"@types/semver": "^7.8.0",
+		"@uwu/quartz": "^1.5.3",
+		"concurrently": "^9.2.1",
+		"dasha": "3.2.0",
+		"flac-stream-tagger": "^1.0.10",
+		"http-server": "^14.1.1",
+		"idb-keyval": "^6.3.0",
+		"luna": "github:Inrixia/TidaLuna",
+		"material-ui-confirm": "^4.0.0",
+		"mediabunny": "^1.65.2",
+		"music-metadata": "^11.16.1",
+		"musicbrainz-api": "^1.2.1",
+		"neptune-types": "^1.0.1",
+		"node-taglib-sharp": "^6.0.3",
+		"oby": "^15.1.2",
+		"redux": "^5.0.1",
+		"rimraf": "^6.1.2",
+		"sanitize-filename": "^1.6.5",
+		"semver": "^7.8.6",
+		"tsx": "^4.21.0",
+		"typescript": "^5.9.3"
+	},
+	"license": "MIT",
+	"author": {
+		"name": "Solomag"
+	},
+	"private": true,
+	"packageManager": "pnpm@11.24.0"
+}

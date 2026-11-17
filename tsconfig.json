@@ -1,0 +1,9 @@
+{
+	"extends": "luna/tsconfig.json",
+	// The nested TidaLuna/ clone is a reference checkout (gitignored), not part of this project
+	"compilerOptions": {
+		// neptune-types ships a .d.ts that does not parse; TidaLuna itself has the same error
+		"skipLibCheck": true
+	},
+	"exclude": ["TidaLuna", "node_modules", "dist"]
+}
