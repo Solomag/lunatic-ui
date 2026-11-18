@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/custom-covers",
+  "version": "0.1.0",
+  "description": "Set your own cover for any album or playlist from the right click menu, from an image link or a local file. Covers are only changed locally and can be reset at any time.",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.tsx",
+  "type": "module"
+}
