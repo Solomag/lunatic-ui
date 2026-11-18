@@ -17,7 +17,11 @@ function lunaUiIntercepts(actionType: string) {
   const unloads = ui.unloads;
   if (!(unloads instanceof Set)) return false;
   const source = `intercept${JSON.stringify([actionType])}`;
-  for (const unload of unloads) if ((unload as { source?: unknown })?.source === source) return true;
+  // Luna prefixes the source with the owning module when it is added to the unloads: `@luna/ui.intercept[...]`
+  for (const unload of unloads) {
+    const unloadSource = (unload as { source?: unknown })?.source;
+    if (typeof unloadSource === "string" && unloadSource.endsWith(source)) return true;
+  }
   return false;
 }
 
