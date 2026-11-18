@@ -2,13 +2,13 @@ import type { LunaUnload } from "@luna/core";
 import { ContextMenu, redux } from "@luna/lib";
 
 import { askForCover } from "./coverDialog";
-import { coverKey, getCover, interceptCovers, resetCover, setCover, titleOf } from "./covers";
+import { applyCovers, coverKey, getCover, resetCover, setCover, titleOf } from "./covers";
 
 export const unloads = new Set<LunaUnload>();
 
 export { Settings } from "./Settings";
 
-interceptCovers(unloads);
+applyCovers(unloads);
 
 const setButton = ContextMenu.addButton(unloads);
 const resetButton = ContextMenu.addButton(unloads);
@@ -28,8 +28,9 @@ ContextMenu.onMediaItem(unloads, async ({ mediaCollection, contextMenu }) => {
 	});
 	await setButton.show(contextMenu);
 
-	// Remove the whole menu item (show() appends the span's wrapper), removing only the span would break the button
-	if (current === undefined) return resetButton.elem?.parentElement?.parentElement?.remove();
+	// ContextMenuButton.hide() is new in @luna/lib (Inrixia/TidaLuna#223), older versions need the whole menu item removed by hand
+	if (current === undefined)
+		return "hide" in resetButton ? (resetButton as { hide(): void }).hide() : resetButton.elem?.parentElement?.parentElement?.remove();
 	resetButton.onClick(() => {
 		redux.actions["contextMenu/CLOSE"]();
 		resetCover(coverKey(collection));
