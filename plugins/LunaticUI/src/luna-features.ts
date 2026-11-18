@@ -30,8 +30,8 @@ export const lunaFeatures = {
   settingsTabs: typeof ui.SettingsTabs === "object" && ui.SettingsTabs !== null,
   /** Luna asks before a logout from the profile menu (TidaLuna 1.20.5+, Inrixia/TidaLuna#212) */
   coreLogoutConfirm: lunaUiIntercepts("session/LOGOUT"),
-  /** @luna/ui LunaTheme API (TidaLuna 1.22.0+): plugins extend Luna's MUI theme, Luna setting components are themeable */
-  themeOverrides: typeof (ui.LunaTheme as { override?: unknown } | undefined)?.override === "function",
+  /** @luna/ui MuiTheme API (TidaLuna 1.22.0+): plugins extend Luna's MUI theme, Luna setting components are themeable */
+  themeOverrides: typeof (ui.MuiTheme as { override?: unknown } | undefined)?.override === "function",
 } as const;
 
 export const WINDOW_TITLE_SELECTOR = 'div[class^="_mainContainer"] > div[class^="_bar"] > div[class^="_title"]';
