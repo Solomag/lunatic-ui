@@ -17,6 +17,7 @@ Most people who run Luna are not developers: the settings page is the only part 
 | **Copy Artist - Title** (`@solomag/copy-artist-title`) | Adds *Copy Artist - Title* to the track, album and playlist context menu: copies one `Artist - Title` line per track to the clipboard, with several artists joined by `, `. |
 | **Custom Covers** (`@solomag/custom-covers`) | Right click an album or playlist → *Set custom cover…* to show your own cover instead of TIDAL's, from an image link or a local file (scaled to 1280px and kept in plugin storage). It shows everywhere the cover does: headers, grids, the player bar, now playing and the OS media controls. Only changed locally; *Reset custom cover* or the plugin settings bring TIDAL's cover back. |
 | **Scroll Restore** (`@solomag/scroll-restore`) | Remembers how far you scrolled on each page (collection tabs, playlists, albums, artists, search) and returns you there when you open it again from the sidebar, a tab or a link. Long lists are loaded until the position is reached; scrolling yourself stops it. |
+| **Remote API** (`@solomag/remote-api`) | A local HTTP and WebSocket API to control TIDAL from other apps: play, pause, skip, seek, volume, add a track to the queue, and read the current track and player state. For stream bots (streamer.bot), Stream Deck and scripts. Only this computer by default, optional token. Based on [`@vmohammad/api`](https://github.com/vMohammad24/luna-plugins/tree/master/plugins/api) by vMohammad. |
 
 Each plugin works on its own.
 

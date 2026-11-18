@@ -3,6 +3,17 @@
 Lunatic is MIT licensed (see `LICENSE`), except for the third-party work listed here, which
 stays under its own license.
 
+## vMohammad — @vmohammad/api (no license; reuse with credit permitted by the author)
+
+`plugins/RemoteApi` is based on the `@vmohammad/api` plugin by vMohammad,
+<https://github.com/vMohammad24/luna-plugins/tree/master/plugins/api> (commit `577f5e2`).
+That repository has no license file. Its README marks it deprecated and asks anyone who
+re-uploads its plugins to credit the original author and link back to the repository, which
+this notice does. The original files were imported unchanged in the first commit of
+`plugins/RemoteApi` and then changed (settings, network binding, token and Origin checks,
+server restart and error handling). The MIT license of Lunatic does not apply to the parts
+that come from the original plugin.
+
 ## FlazeIGuess (Victor Boiting) — Microsoft Public License (MS-PL)
 
 Code adapted from Inrixia/TidaLuna#195 and #197 by FlazeIGuess, contributed to TidaLuna under

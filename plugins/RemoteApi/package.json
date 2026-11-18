@@ -1,11 +1,10 @@
 {
-    "name": "@vmohammad/api",
-    "description": "Creates an API for Tidal",
-    "author": {
-        "name": "vMohammad",
-        "url": "https://vmohammad.dev",
-        "avatarUrl": "https://avatars.githubusercontent.com/u/62218284?v=4"
-    },
-    "main": "./src/index.ts",
-    "type": "module"
+	"name": "@solomag/remote-api",
+	"version": "1.0.0",
+	"description": "Control TIDAL from other apps over a local HTTP and WebSocket API: play, pause, skip, seek, volume, add tracks to the queue and read the current track. For stream bots (streamer.bot), Stream Deck and scripts. Based on @vmohammad/api by vMohammad.",
+	"author": {
+		"name": "Solomag"
+	},
+	"main": "./src/index.ts",
+	"type": "module"
 }
