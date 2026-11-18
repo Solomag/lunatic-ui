@@ -12,3 +12,7 @@ type ShortcutApi = { register(unloads: LunaUnloads, options: ShortcutOptions): u
 
 /** Luna's keyboard shortcut API (`Shortcut` in @luna/lib), undefined on Luna versions without it */
 export const Shortcut = (lib as { Shortcut?: ShortcutApi }).Shortcut;
+
+type SelectionApi = { fromSelection?: () => lib.MediaItems | undefined };
+/** The tracks/videos selected on the open page (`MediaItems.fromSelection`), undefined if none or on Luna versions without it */
+export const selectedItems = () => (lib.MediaItems as SelectionApi).fromSelection?.();

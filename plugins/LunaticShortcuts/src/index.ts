@@ -1,7 +1,7 @@
 import { Tracer, type LunaUnload } from "@luna/core";
-import { MediaItem, redux } from "@luna/lib";
+import { MediaItem, PlayState, redux } from "@luna/lib";
 
-import { Shortcut } from "./shortcut";
+import { selectedItems, Shortcut } from "./shortcut";
 
 export const { trace, errSignal } = Tracer("[Lunatic Shortcuts]");
 export const unloads = new Set<LunaUnload>();
@@ -25,6 +25,9 @@ const toggleFavorite = () => {
 		moduleId: "NOW_PLAYING",
 	});
 };
+
+// The ids of the selected tracks/videos, false (the key goes on to TIDAL) if nothing is selected
+const selectedIds = () => selectedItems()?.tMediaItems.map(({ item }) => item.id) ?? false;
 
 // Keys TIDAL already uses (Ctrl+Left/Right, Shift+Ctrl+Left/Right, Ctrl+S, Ctrl+F, Ctrl+H, Ctrl+P, Ctrl+U, Shift+Ctrl+L) are left alone
 if (Shortcut === undefined) {
@@ -71,5 +74,25 @@ if (Shortcut === undefined) {
 		keys: "Alt+B",
 		label: "Go to the playing album",
 		action: () => goTo("album"),
+	});
+	Shortcut.register(unloads, {
+		id: "lunatic.playSelectedNext",
+		keys: "Alt+N",
+		label: "Play the selected tracks next",
+		action: () => {
+			const ids = selectedIds();
+			if (ids === false) return false;
+			PlayState.playNext(ids);
+		},
+	});
+	Shortcut.register(unloads, {
+		id: "lunatic.queueSelected",
+		keys: "Alt+Q",
+		label: "Add the selected tracks to the end of the queue",
+		action: () => {
+			const ids = selectedIds();
+			if (ids === false) return false;
+			redux.actions["playQueue/ADD_LAST"]({ mediaItemIds: ids, context: { type: "UNKNOWN" } });
+		},
 	});
 }
