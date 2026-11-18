@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/copy-artist-title",
+  "version": "1.0.0",
+  "description": "Adds \"Copy Artist - Title\" to the track, album and playlist context menu: copies one \"Artist - Title\" line per track to the clipboard.",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.ts",
+  "type": "module"
+}

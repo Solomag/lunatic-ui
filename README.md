@@ -14,6 +14,7 @@ Most people who run Luna are not developers: the settings page is the only part 
 | --- | --- |
 | **Lunatic UI** (`@solomag/lunatic-ui`) | Rebuilds the Luna Settings page: installed plugins grouped into *Failed to load / Enabled / Disabled* with search and filters, a cached plugin store with search, opt-in download counts and preview images, themes, settings and a separate Feature Flags tab. Colours come from TIDAL's own `--wave-*` design tokens and icons from TIDAL's own sprite. Also adds a confirmation before Log Out and keeps settings pages clear of the player bar. |
 | **Lunatic Appearance** (`@solomag/lunatic-appearance`) | Colour editor (HSV + alpha, live preview, save/discard/reset) for the settings page; optionally pushes its colours into a theme palette (`--solo-*`) so a theme that publishes it into TIDAL's tokens recolours all of TIDAL. |
+| **Copy Artist - Title** (`@solomag/copy-artist-title`) | Adds *Copy Artist - Title* to the track, album and playlist context menu: copies one `Artist - Title` line per track to the clipboard, with several artists joined by `, `. |
 
 Each plugin works on its own.
 
