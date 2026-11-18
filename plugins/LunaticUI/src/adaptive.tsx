@@ -1,6 +1,5 @@
 export { LunaticUiSettings } from "./adaptive/Preferences";
 export { adaptiveStoreCss } from "./adaptive/css";
-export { settingsTabsApiCss } from "./adaptive/tabs-api";
 export { previewImageCss } from "./adaptive/preview-image";
 export {
   installAdaptiveSettingsTakeover,

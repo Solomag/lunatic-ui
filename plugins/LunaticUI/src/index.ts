@@ -1,6 +1,6 @@
 import { LunaUnload, Tracer } from "@luna/core";
 import packageManifest from "../package.json";
-import { adaptiveStoreCss, installAdaptiveSettingsTakeover, LunaticUiSettings, previewImageCss, settingsTabsApiCss } from "./adaptive";
+import { adaptiveStoreCss, installAdaptiveSettingsTakeover, LunaticUiSettings, previewImageCss } from "./adaptive";
 import {
   installPlayBarClearanceTracking,
   queuePlayBarClearance,
@@ -10,7 +10,6 @@ import {
   lunaticLayoutCss,
   lunaticPluginStoreUxCss,
 } from "./styles/runtime";
-import { createLegacyDomRuntime } from "./legacy/runtime";
 import { installProfileMenuSafety } from "./profile-menu";
 import { installTidalShellPolish } from "./tidal-shell";
 
@@ -26,10 +25,10 @@ export const unloads = new Set<LunaUnload>();
 
 const STYLE_ID = "lunatic-ui-style";
 
-const adaptiveTakeover = installAdaptiveSettingsTakeover();
+const adaptiveTakeover = await installAdaptiveSettingsTakeover();
 const adaptiveTakeoverAvailable = adaptiveTakeover.active;
-// The legacy DOM fallback only exists for Luna builds without the SettingsTabs API
-const legacyDom = adaptiveTakeover.viaTabsApi ? undefined : createLegacyDomRuntime();
+// The legacy DOM fallback only exists for Luna builds without the SettingsTabs API, it is not even loaded otherwise
+const legacyDom = adaptiveTakeover.viaTabsApi ? undefined : (await import("./legacy/runtime")).createLegacyDomRuntime();
 
 function injectStyle() {
   let style = document.getElementById(STYLE_ID) as HTMLStyleElement | null;
@@ -40,7 +39,7 @@ function injectStyle() {
     document.head.appendChild(style);
   }
 
-  const css = `/* ===== LUNATIC UI: LAYOUT + UX ===== */\n${lunaticLayoutCss}\n\n${lunaticPluginStoreUxCss}\n\n/* ===== ADAPTIVE SETTINGS TAKEOVER ===== */\n${adaptiveStoreCss}\n\n/* ===== SETTINGS TABS API ===== */\n${settingsTabsApiCss}
+  const css = `/* ===== LUNATIC UI: LAYOUT + UX ===== */\n${lunaticLayoutCss}\n\n${lunaticPluginStoreUxCss}\n\n/* ===== ADAPTIVE SETTINGS TAKEOVER ===== */\n${adaptiveStoreCss}\n\n/* ===== SETTINGS TABS API ===== */\n${adaptiveTakeover.css ?? ""}
 
 /* ===== STORE PREVIEW IMAGES ===== */
 ${previewImageCss}`;
@@ -49,7 +48,7 @@ ${previewImageCss}`;
 
 injectStyle();
 installPlayBarClearanceTracking();
-installProfileMenuSafety(unloads);
+await installProfileMenuSafety(unloads);
 installTidalShellPolish(unloads);
 
 window.addEventListener("resize", queuePlayBarClearance, { passive: true, signal: lifecycleSignal });
@@ -64,24 +63,21 @@ function enableLegacyFallback(reason: string) {
   if (!wasActive) trace.msg.warn(`Legacy DOM fallback enabled (${reason})`);
 }
 
-function disableLegacyFallback() {
-  legacyDom?.disable();
-}
+if (legacyDom) {
+  document.addEventListener("lunatic:adaptive-health", ((event: Event) => {
+    const health = (event as CustomEvent<"pending" | "healthy" | "failed">).detail;
+    if (health === "healthy") legacyDom.disable();
+    else if (health === "failed") enableLegacyFallback("adaptive structural health check failed");
+  }) as EventListener, { signal: lifecycleSignal });
 
-document.addEventListener("lunatic:adaptive-health", ((event: Event) => {
-  const health = (event as CustomEvent<"pending" | "healthy" | "failed">).detail;
-  if (health === "healthy") disableLegacyFallback();
-  else if (health === "failed") enableLegacyFallback("adaptive structural health check failed");
-}) as EventListener, { signal: lifecycleSignal });
+  /* Cached tabs no longer remount on every navigation. This event only matters
+     when the legacy fallback is active. */
+  document.addEventListener("lunatic:settings-tab-change", (() => {
+    legacyDom.queueScan();
+  }) as EventListener, { signal: lifecycleSignal });
 
-/* Cached tabs no longer remount on every navigation. This event only matters
-   when the legacy fallback is active. */
-document.addEventListener("lunatic:settings-tab-change", (() => {
-  legacyDom?.queueScan();
-}) as EventListener, { signal: lifecycleSignal });
-
-if (!adaptiveTakeoverAvailable) {
-  enableLegacyFallback("adaptive takeover unavailable");
+  if (!adaptiveTakeoverAvailable) enableLegacyFallback("adaptive takeover unavailable");
+  else if (adaptiveTakeover.health === "failed") enableLegacyFallback("adaptive structural health check failed");
 }
 
 unloads.add(() => {

@@ -1,6 +1,6 @@
 import type { LunaUnload } from "@luna/core";
+import { lunaKeepsWindowTitle, WINDOW_TITLE_SELECTOR as TITLE_SELECTOR } from "./luna-features";
 
-const TITLE_SELECTOR = 'div[class^="_mainContainer"] > div[class^="_bar"] > div[class^="_title"]';
 const TITLE_CHECK_MS = 1200;
 
 function normalize(value: string | null | undefined) {
@@ -31,6 +31,15 @@ function ensureTidalLunaTitle() {
 }
 
 export function installTidalShellPolish(unloads: Set<LunaUnload>) {
+  let unloaded = false;
+  unloads.add(() => (unloaded = true));
+  // A Luna that re-applies its title itself needs none of this
+  void lunaKeepsWindowTitle(unloads).then((lunaKeepsTitle) => {
+    if (!lunaKeepsTitle && !unloaded) pollTidalLunaTitle(unloads);
+  });
+}
+
+function pollTidalLunaTitle(unloads: Set<LunaUnload>) {
   ensureTidalLunaTitle();
   const timer = window.setInterval(ensureTidalLunaTitle, TITLE_CHECK_MS);
   const refresh = () => ensureTidalLunaTitle();

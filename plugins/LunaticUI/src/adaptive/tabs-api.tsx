@@ -1,7 +1,7 @@
 /**
  * Lunatic views mounted through the @luna/ui SettingsTabs API.
  *
- * Used when the running Luna exposes `SettingsTabs` (see Solomag/TidaLuna feat/settings-tab-api).
+ * Loaded by takeover.tsx only when the running Luna exposes `SettingsTabs` (TidaLuna 1.21.0+).
  * Unlike the React-tree takeover in takeover.tsx this does not depend on the internal structure
  * of the Luna Settings page, so it needs no structural health check or legacy DOM fallback.
  */
@@ -18,6 +18,7 @@ import { LunaticPlugins } from "./Plugins";
 import { LunaticSettings } from "./Settings";
 import { SettingsGlyph } from "./icons";
 import { hasTidalIcon, TidalSpriteIcon, tidalIcons, type TidalIcon } from "./tidal-icons";
+import type { AdaptiveTakeover } from "./takeover";
 
 type TabProps = { active: boolean };
 type Unloads = Set<LunaUnload>;
@@ -31,11 +32,11 @@ interface SettingsTabsApi {
 
 export const FEATURE_FLAGS_TAB = "Feature Flags";
 
-export const settingsTabsApi = (lunaUi as any).SettingsTabs as SettingsTabsApi | undefined;
+const settingsTabsApi = (lunaUi as any).SettingsTabs as SettingsTabsApi;
 const settingsPage = (lunaUi as any).settingsPage as { pageStyles?: CSSStyleDeclaration } | undefined;
 
 /** Luna's own tab container already adds spacing, the Lunatic wrapper owns it instead. */
-export const settingsTabsApiCss = String.raw`
+const settingsTabsApiCss = String.raw`
 [data-luna-settings-root] { margin-bottom: 0 !important; }
 [data-luna-settings-root] > [data-luna-settings-tab-page] { margin: 0 !important; padding: 0 !important; max-width: none !important; }
 /* Themes that frame Luna's tab container by its MUI class would draw a box under the tab row: the Lunatic view owns its own surfaces */
@@ -72,7 +73,7 @@ const tabSpriteIcons: Record<string, TidalIcon> = {
 
 const FeatureFlagsView = lunaticTab(FEATURE_FLAGS_TAB, () => <LunaticFeatureFlags />);
 
-export function installSettingsTabs(api: SettingsTabsApi): () => void {
+function installSettingsTabs(api: SettingsTabsApi): () => void {
   const unloads: Unloads = new Set();
   for (const [id, content] of Object.entries(views)) api.override(unloads, id, { content, keepAlive: true });
 
@@ -106,5 +107,27 @@ export function installSettingsTabs(api: SettingsTabsApi): () => void {
     for (const unload of unloads) unload();
     if (settingsPage?.pageStyles && originalBackground !== undefined) settingsPage.pageStyles.background = originalBackground;
     document.querySelector("[data-luna-settings-root]")?.removeAttribute("data-lunatic-settings-root");
+  };
+}
+
+const OWNED_TABS = new Set([...Object.keys(views), FEATURE_FLAGS_TAB]);
+
+export function installSettingsTabsTakeover(): AdaptiveTakeover {
+  const uninstall = installSettingsTabs(settingsTabsApi);
+  let installed = true;
+  return {
+    active: true,
+    viaTabsApi: true,
+    health: "healthy",
+    css: settingsTabsApiCss,
+    isOwnedTabActive: () => installed && OWNED_TABS.has(settingsTabsApi.current),
+    leaveFeatureFlagsTab() {
+      if (installed && settingsTabsApi.current === FEATURE_FLAGS_TAB) settingsTabsApi.open("Settings");
+    },
+    unload() {
+      if (!installed) return;
+      installed = false;
+      uninstall();
+    },
   };
 }
