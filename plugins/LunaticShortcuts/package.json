@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/lunatic-shortcuts",
+  "version": "0.1.0",
+  "description": "Extra keyboard shortcuts for TIDAL: volume, mute, repeat, go to the playing artist or album. Rebind or turn them off in Luna Settings.",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.ts",
+  "type": "module"
+}

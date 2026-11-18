@@ -1,6 +1,8 @@
 import { Tracer, type LunaUnload } from "@luna/core";
-import { ContextMenu, redux, type MediaItem } from "@luna/lib";
+import { ContextMenu, MediaItem, redux } from "@luna/lib";
 import { clipboardWriteText } from "@luna/lib.native";
+
+import { Shortcut } from "./shortcut";
 
 export const { trace, errSignal } = Tracer("[Copy Artist - Title]");
 export const unloads = new Set<LunaUnload>();
@@ -39,4 +41,18 @@ ContextMenu.onMediaItem(unloads, async ({ mediaCollection, contextMenu }) => {
 	});
 
 	await copyButton.show(contextMenu);
+});
+
+// Ctrl+Shift+C copies the playing track, on Luna versions with keyboard shortcuts
+Shortcut?.register(unloads, {
+	id: "copyArtistTitle.playing",
+	keys: "Ctrl+Shift+C",
+	label: "Copy Artist - Title of the playing track",
+	action: async () => {
+		const mediaItem = await MediaItem.fromPlaybackContext();
+		if (mediaItem === undefined) return;
+		const line = artistTitle(mediaItem);
+		await clipboardWriteText(line);
+		trace.msg.log(`Copied ${line}`);
+	},
 });
