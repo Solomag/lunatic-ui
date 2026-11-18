@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/scroll-restore",
+  "version": "1.0.0",
+  "description": "Returns you to where you were in a long list when you open the page again from the sidebar, a tab or a link, not only with Back. Lists that are not loaded that far yet are loaded until the position is reached.",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.ts",
+  "type": "module"
+}

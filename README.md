@@ -16,6 +16,7 @@ Most people who run Luna are not developers: the settings page is the only part 
 | **Lunatic Appearance** (`@solomag/lunatic-appearance`) | Colour editor (HSV + alpha, live preview, save/discard/reset) for the settings page; optionally pushes its colours into a theme palette (`--solo-*`) so a theme that publishes it into TIDAL's tokens recolours all of TIDAL. |
 | **Copy Artist - Title** (`@solomag/copy-artist-title`) | Adds *Copy Artist - Title* to the track, album and playlist context menu: copies one `Artist - Title` line per track to the clipboard, with several artists joined by `, `. |
 | **Custom Covers** (`@solomag/custom-covers`) | Right click an album or playlist → *Set custom cover…* to show your own cover instead of TIDAL's, from an image link or a local file (scaled to 1280px and kept in plugin storage). It shows everywhere the cover does: headers, grids, the player bar, now playing and the OS media controls. Only changed locally; *Reset custom cover* or the plugin settings bring TIDAL's cover back. |
+| **Scroll Restore** (`@solomag/scroll-restore`) | Remembers how far you scrolled on each page (collection tabs, playlists, albums, artists, search) and returns you there when you open it again from the sidebar, a tab or a link. Long lists are loaded until the position is reached; scrolling yourself stops it. |
 
 Each plugin works on its own.
 
