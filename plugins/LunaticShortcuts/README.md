@@ -7,6 +7,7 @@ Extra keyboard shortcuts for TIDAL, on top of the ones TIDAL already has (Ctrl+L
 | Ctrl+Up / Ctrl+Down | Volume up / down |
 | Ctrl+M | Mute / unmute |
 | Ctrl+R | Repeat: off / all / one |
+| Alt+L | Add the playing track to My Collection / remove it |
 | Alt+A | Go to the playing artist |
 | Alt+B | Go to the playing album |
 

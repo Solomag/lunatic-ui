@@ -14,6 +14,18 @@ const goTo = async (kind: "artist" | "album") => {
 	redux.actions["router/PUSH"]({ pathname: `/${kind}/${id}`, search: "", replace: false });
 };
 
+// Adds the playing track or video to My Collection or removes it, like the heart in the player bar
+const toggleFavorite = () => {
+	const { mediaProduct } = redux.store.getState().playbackControls;
+	if (mediaProduct?.productId === undefined) return false;
+	const item = { itemId: Number(mediaProduct.productId), itemType: mediaProduct.productType };
+	redux.actions["content/TOGGLE_FAVORITE_ITEMS"](<redux.ActionPayloads["content/TOGGLE_FAVORITE_ITEMS"]>{
+		from: "heart",
+		items: [item],
+		moduleId: "NOW_PLAYING",
+	});
+};
+
 // Keys TIDAL already uses (Ctrl+Left/Right, Shift+Ctrl+Left/Right, Ctrl+S, Ctrl+F, Ctrl+H, Ctrl+P, Ctrl+U, Shift+Ctrl+L) are left alone
 if (Shortcut === undefined) {
 	trace.msg.warn("Needs a Luna version with keyboard shortcuts (Shortcut API), nothing is registered");
@@ -41,6 +53,12 @@ if (Shortcut === undefined) {
 		keys: "Ctrl+R",
 		label: "Repeat: off / all / one",
 		action: () => redux.actions["playQueue/TOGGLE_REPEAT_MODE"](),
+	});
+	Shortcut.register(unloads, {
+		id: "lunatic.toggleFavorite",
+		keys: "Alt+L",
+		label: "Add the playing track to My Collection / remove it",
+		action: toggleFavorite,
 	});
 	Shortcut.register(unloads, {
 		id: "lunatic.goToArtist",
