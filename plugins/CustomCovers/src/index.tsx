@@ -29,8 +29,10 @@ ContextMenu.onMediaItem(unloads, async ({ mediaCollection, contextMenu }) => {
 	await setButton.show(contextMenu);
 
 	// ContextMenuButton.hide() is new in @luna/lib (Inrixia/TidaLuna#223), older versions need the whole menu item removed by hand
-	if (current === undefined)
-		return "hide" in resetButton ? (resetButton as { hide(): void }).hide() : resetButton.elem?.parentElement?.parentElement?.remove();
+	if (current === undefined) {
+		const button = resetButton as unknown as { hide?: () => void; elem?: HTMLElement };
+		return button.hide !== undefined ? button.hide() : button.elem?.parentElement?.parentElement?.remove();
+	}
 	resetButton.onClick(() => {
 		redux.actions["contextMenu/CLOSE"]();
 		resetCover(coverKey(collection));
