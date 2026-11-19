@@ -1,6 +1,7 @@
 import { Tracer, type LunaUnload } from "@luna/core";
 import { MediaItem, PlayState, redux } from "@luna/lib";
 
+import { canEditPlaylists, PlaylistRemoval } from "./playlist";
 import { selectedItems, Shortcut } from "./shortcut";
 
 export const { trace, errSignal } = Tracer("[Lunatic Shortcuts]");
@@ -95,4 +96,26 @@ if (Shortcut === undefined) {
 			redux.actions["playQueue/ADD_LAST"]({ mediaItemIds: ids, context: { type: "UNKNOWN" } });
 		},
 	});
+
+	if (!canEditPlaylists) {
+		trace.log("This Luna version can't edit playlists, Delete / Undo for playlists are not registered");
+	} else {
+		const removal = new PlaylistRemoval(unloads, trace);
+		// Mac keyboards label Backspace as "delete", so it's bound there too
+		const isMac = navigator.userAgent.includes("Mac");
+		Shortcut.register(unloads, {
+			id: "lunatic.removeFromPlaylist",
+			keys: isMac ? ["Delete", "Backspace"] : "Delete",
+			label: "Remove the selected tracks from the playlist",
+			// Off until turned on in Luna Settings, removing tracks with one key shouldn't come as a surprise
+			enabled: false,
+			action: () => removal.removeSelected(),
+		});
+		Shortcut.register(unloads, {
+			id: "lunatic.undoRemoveFromPlaylist",
+			keys: isMac ? "Meta+Z" : "Ctrl+Z",
+			label: "Undo removing tracks from the playlist",
+			action: () => removal.undo(),
+		});
+	}
 }
