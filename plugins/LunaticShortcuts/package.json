@@ -1,0 +1,10 @@
+{
+  "name": "@solomag/lunatic-shortcuts",
+  "version": "0.2.0",
+  "description": "Extra keyboard shortcuts for TIDAL: volume, mute, repeat, like, go to the playing artist or album, queue the selected tracks, Delete removes them from a playlist (with Undo). Rebind or turn them off in Luna Settings.",
+  "author": {
+    "name": "Solomag"
+  },
+  "main": "./src/index.ts",
+  "type": "module"
+}
