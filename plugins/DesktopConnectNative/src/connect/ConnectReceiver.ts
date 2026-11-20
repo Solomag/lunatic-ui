@@ -40,7 +40,9 @@ export type PlayerEvent =
 	// The desktop user pressed play on the phone's media that ended or could not be loaded, played like the phone's play
 	| { type: "play" }
 	// The desktop user played something of their own (another album or track): the phone's media stopped, the player is let go
-	| { type: "takenOver" };
+	| { type: "takenOver" }
+	// The desktop's volume (0..1) and mute, also after the phone set them: the phone's slider and volume keys go from it
+	| { type: "volume"; level: number; mute: boolean };
 
 type Json = Record<string, any>;
 
@@ -304,6 +306,23 @@ export class ConnectReceiver {
 	private toSession(message: Json) {
 		for (const socket of this.session?.members ?? []) this.send(socket, message);
 	}
+
+	// The desktop's volume as the phone knows it (TIDAL's notifyDeviceStatusChanged, level 0..1)
+	private volume: { level: number; mute: boolean } | undefined;
+	private deviceStatus() {
+		return { command: "notifyDeviceStatusChanged", volume: { level: this.volume!.level, mute: this.volume!.mute } };
+	}
+	private sendVolume(socket: WebSocket) {
+		if (this.volume !== undefined) this.send(socket, this.deviceStatus());
+	}
+	private setVolume(level: number, mute: boolean) {
+		if (!Number.isFinite(level)) return;
+		level = Math.min(Math.max(level, 0), 1);
+		// The player rounds what the phone set, that is no change to tell
+		if (this.volume !== undefined && Math.abs(this.volume.level - level) < 0.01 && this.volume.mute === mute) return;
+		this.volume = { level, mute };
+		if (this.session !== undefined && !this.session.suspended) this.toSession(this.deviceStatus());
+	}
 	// #endregion
 
 	// #region Commands
@@ -350,10 +369,15 @@ export class ConnectReceiver {
 				this.finished = true;
 				return 0;
 			case "setVolume":
-				if (typeof message.level === "number") toPlayer({ type: "volume", level: message.level });
+				if (typeof message.level !== "number" || !Number.isFinite(message.level)) return 0;
+				// Known at once: the player's report of it is not sent back while the phone drags its slider
+				if (this.volume !== undefined) this.volume.level = message.level;
+				toPlayer({ type: "volume", level: message.level });
 				return 0;
 			case "setMute":
-				if (typeof message.mute === "boolean") toPlayer({ type: "mute", mute: message.mute });
+				if (typeof message.mute !== "boolean") return 0;
+				if (this.volume !== undefined) this.volume.mute = message.mute;
+				toPlayer({ type: "mute", mute: message.mute });
 				return 0;
 			case "loadCloudQueue":
 				await this.loadCloudQueue(message);
@@ -436,6 +460,7 @@ export class ConnectReceiver {
 		this.session = { id: randomUUID(), members: new Set([socket]), suspended: false };
 		this.log("session started", this.session.id);
 		this.send(socket, { command: "notifySessionStarted", sessionId: this.session.id, joined: false });
+		this.sendVolume(socket);
 	}
 
 	private resumeSession(socket: WebSocket, sessionId: unknown) {
@@ -457,6 +482,7 @@ export class ConnectReceiver {
 		if (this.queueInfo !== undefined) this.send(socket, { command: "notifyQueueChanged", queueInfo: this.queueInfo });
 		if (this.media !== undefined) this.send(socket, this.mediaChanged(this.media));
 		this.send(socket, this.playerStatus());
+		this.sendVolume(socket);
 	}
 
 	private endSession(stopCasting: boolean) {
@@ -913,6 +939,8 @@ export class ConnectReceiver {
 
 	// What the player did
 	onPlayerEvent(event: PlayerEvent) {
+		// Not the phone's media, also outside a session (told when one starts), not behind a step loading the queue
+		if (event.type === "volume") return this.setVolume(event.level, event.mute);
 		if (event.type === "takenOver") this.takeovers++;
 		return this.serial(() => this.handlePlayerEvent(event), `player ${event.type}`);
 	}

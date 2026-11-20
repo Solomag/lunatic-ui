@@ -63,6 +63,18 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		commands = commands.then(() => (unloaded ? undefined : run(command))).catch(trace.err.withContext(`receiver ${command.type}`));
 	});
 
+	// The phone's volume slider and keys go from the desktop's volume: told when it changes, by the desktop user or the phone
+	let reportedVolume: string | undefined;
+	const reportVolume = () => {
+		const { volume, muted } = redux.store.getState().playbackControls;
+		const key = `${volume}/${muted}`;
+		if (key === reportedVolume) return;
+		reportedVolume = key;
+		playerEvent({ type: "volume", level: volume / 100, mute: muted });
+	};
+	reportVolume();
+	unloads.add(redux.store.subscribe(reportVolume));
+
 	// Set while the phone's media is loaded but not started or paused: TIDAL reports STALLED then, which is paused for the phone
 	let paused = false;
 	// While the phone's media loads: TIDAL passes through idle and paused when the queue is replaced, the phone sees buffering
