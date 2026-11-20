@@ -2,6 +2,7 @@ import { getResponder, type CiaoService, type Responder } from "@homebridge/ciao
 import { createHash } from "crypto";
 import { app, webContents } from "electron";
 import { readFile } from "fs/promises";
+import { createServer } from "net";
 import { hostname, networkInterfaces } from "os";
 import path from "path";
 
@@ -39,8 +40,9 @@ const toPlayer = (command: PlayerCommand) => {
 };
 const log = (...args: unknown[]) => console.log("[DesktopConnectNative]", ...args);
 
-// Not TIDAL's own device id (its receiver may be advertised too), stable so the phone remembers the device
-const deviceId = () => createHash("md5").update(`TidaLuna:${hostname()}`).digest("hex");
+// Not TIDAL's own device id (its receiver may be advertised too), stable so the phone remembers the device.
+// Each TIDAL profile on the computer is a device of its own (the phone tells devices apart by it)
+const deviceId = () => createHash("md5").update(`TidaLuna:${hostname()}:${app.getPath("userData")}`).digest("hex");
 
 // The certificate and key from the key folder, otherwise TIDAL's certificate with the key the plugin was built with
 const loadKeys = async (builtInKeyBase64: string) => {
@@ -55,8 +57,27 @@ const loadKeys = async (builtInKeyBase64: string) => {
 	return undefined;
 };
 
-// The phone connects to port 9000 whatever port the mDNS record says (Lunar uses 9000 too)
-const connectPort = 9000;
+// The phone connects to the port in the mDNS record (checked with TIDAL Android 2026-11). 9000 is TIDAL's own receiver's
+// and TidaLunar's: the receiver takes the first port from the user's that no one listens on, so they run side by side
+const portsTried = 20;
+const isFree = (port: number, host: string) =>
+	new Promise<boolean>((resolve) => {
+		const probe = createServer();
+		probe.once("error", () => resolve(false));
+		probe.listen(port, host, () => probe.close(() => resolve(true)));
+	});
+const freePort = async (setting: number) => {
+	const firstPort = Number.isInteger(setting) && setting >= 1 && setting <= 65535 ? setting : 9000;
+	for (let port = firstPort; port < firstPort + portsTried && port <= 65535; port++) {
+		const hosts = ["0.0.0.0", ...listenHosts()];
+		const free = await Promise.all(hosts.map((host) => isFree(port, host)));
+		if (free.every(Boolean)) return port;
+	}
+	log(`No free port from ${firstPort} to ${firstPort + portsTried - 1}, trying ${firstPort}`);
+	return firstPort;
+};
+
+const defaultDeviceName = () => `TidaLuna: ${hostname().split(".")[0]}`;
 const lanAddresses = () =>
 	Object.values(networkInterfaces())
 		.flat()
@@ -66,32 +87,33 @@ const lanAddresses = () =>
 // A new network (Wi-Fi, VPN, another address) is listened on within this time
 const addressCheckMs = 10_000;
 
-// Port 9000 may be held on all addresses by another receiver: TIDAL's own (tidal_connect_application, started with every
-// window) or TidaLunar's. Windows gives a connection to the socket bound to its exact address before one bound to all
-// addresses, so the receiver listens on each network address (and loopback): the phone's connections come here.
-// Listening on all addresses instead may succeed next to the other receiver (IPv6 dual stack next to its IPv4) and get nothing.
+// The receiver listens on each network address (and loopback): when another receiver takes its port on all addresses
+// later, Windows still gives a connection to the socket bound to its exact address. Listening on all addresses instead
+// may succeed next to another receiver (IPv6 dual stack next to its IPv4) and get nothing.
 // The addresses change with the network, they are checked again every few seconds
 const listenHosts = () => [...lanAddresses(), "127.0.0.1"];
-const listen = async (cert: string | Buffer, key: string | Buffer) => {
-	const receiver = await ConnectReceiver.start({ cert, key, port: connectPort, toPlayer, log, hosts: listenHosts() });
-	if (!receiver.listening) log(`Cannot listen on port ${connectPort} on any network address yet, phones will not find the receiver`);
+const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number) => {
+	const port = await freePort(firstPort);
+	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts() });
+	if (!receiver.listening) log(`Cannot listen on port ${port} on any network address yet, phones will not find the receiver`);
 	const watchAddresses = setInterval(() => receiver.setHosts(listenHosts()).catch(log), addressCheckMs);
 	return { receiver, watchAddresses };
 };
 
 // Starts the own receiver, undefined without a key
-export const startReceiver = (builtInKeyBase64: string) => oneAtATime(() => start(builtInKeyBase64));
-const start = async (builtInKeyBase64: string): Promise<{ port: number } | undefined> => {
+export type ReceiverSettings = { firstPort: number; deviceName: string };
+export const startReceiver = (builtInKeyBase64: string, settings: ReceiverSettings) => oneAtATime(() => start(builtInKeyBase64, settings));
+const start = async (builtInKeyBase64: string, { firstPort, deviceName }: ReceiverSettings): Promise<{ port: number } | undefined> => {
 	if (running.__desktopConnectNativeReceiver) return { port: running.__desktopConnectNativeReceiver.receiver.port };
 	const keys = await loadKeys(builtInKeyBase64);
 	if (keys === undefined) return undefined;
 	const { cert, key } = keys;
-	const { receiver, watchAddresses } = await listen(cert, key);
+	const { receiver, watchAddresses } = await listen(cert, key, firstPort);
 	// Kept at once, so a failed advertise below still stops the receiver
 	const current: Running = { receiver, responder: getResponder(), watchAddresses };
 	running.__desktopConnectNativeReceiver = current;
 	try {
-		await advertise(current);
+		await advertise(current, deviceName);
 	} catch (err) {
 		await stop();
 		throw err;
@@ -100,23 +122,25 @@ const start = async (builtInKeyBase64: string): Promise<{ port: number } | undef
 	return { port: receiver.port };
 };
 
-const advertise = async (current: Running) => {
+// The name the phone shows, the id stays: the phone keeps it as the same device
+const deviceTxt = (deviceName: string) => {
 	const id = deviceId();
+	return { mn: "TidaLuna", id, fn: deviceName.trim() === "" ? defaultDeviceName() : deviceName.trim(), ca: "0", ve: "1" };
+};
+const advertise = async (current: Running, deviceName: string) => {
 	current.service = current.responder.createService({
 		disabledIpv6: true,
 		port: current.receiver.port,
 		type: "tidalconnect",
-		name: `TidalConnect-${id.slice(0, 8)}`,
-		txt: {
-			mn: "TidaLuna",
-			id,
-			fn: `TidaLuna: ${hostname().split(".")[0]}`,
-			ca: "0",
-			ve: "1",
-		},
+		name: `TidalConnect-${deviceId().slice(0, 8)}`,
+		txt: deviceTxt(deviceName),
 	});
 	await current.service.advertise();
 };
+
+// Announced at once, after a start that is still running
+export const setDeviceName = (deviceName: string) =>
+	oneAtATime(async () => running.__desktopConnectNativeReceiver?.service?.updateTxt(deviceTxt(deviceName)));
 
 export const stopReceiver = () => oneAtATime(stop);
 const stop = async () => {

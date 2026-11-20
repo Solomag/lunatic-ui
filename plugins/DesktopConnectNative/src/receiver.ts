@@ -3,6 +3,7 @@ import { ipcRenderer, MediaItem, PlayState, redux } from "@luna/lib";
 
 import type { PlayerCommand, PlayerState } from "./connect/ConnectReceiver";
 import { playerEvent, startReceiver, stopReceiver } from "./receiver.native";
+import { settings } from "./Settings";
 
 const { trace } = Tracer("[DesktopConnectNative]");
 
@@ -52,7 +53,8 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		unloadSet(sessionUnloads);
 		stopReceiver().catch(trace.err.withContext("stop receiver"));
 	});
-	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__).catch(trace.err.withContext("start receiver"));
+	const { firstPort, deviceName } = settings;
+	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, { firstPort, deviceName }).catch(trace.err.withContext("start receiver"));
 	if (started === undefined) return false;
 	if (unloaded) return true;
 	trace.log(`TIDAL Connect receiver on port ${started.port}`);

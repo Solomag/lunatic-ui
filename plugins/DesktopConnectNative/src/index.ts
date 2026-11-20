@@ -1,6 +1,7 @@
 import { LunaPlugin, type LunaUnload, Tracer } from "@luna/core";
 
 import { startOwnReceiver } from "./receiver";
+export { Settings } from "./Settings";
 
 export const unloads = new Set<LunaUnload>();
 

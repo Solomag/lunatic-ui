@@ -74,7 +74,7 @@ type MediaInfo = {
 export type ReceiverOptions = {
 	cert: string | Buffer;
 	key: string | Buffer;
-	// The phone connects to port 9000 whatever the mDNS record says, 0 picks a free port (tests)
+	// The port the mDNS record gives the phone, 0 picks a free port (tests)
 	port: number;
 	// Listens on these addresses only (setHosts follows network changes), on all of them when not given
 	hosts?: string[];
