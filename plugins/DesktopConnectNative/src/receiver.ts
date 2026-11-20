@@ -155,8 +155,9 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		}
 		paused = false;
 		pauseWhenPlaying = false;
-		// TIDAL's desired state, it may not be playing yet
-		if (!PlayState.playing) PlayState.play();
+		// Not only by TIDAL's desired state: a buffering report makes it PLAYING without a play (a paused load
+		// that stalled then waits for one forever)
+		if (!PlayState.playing || PlayState.playbackState !== "PLAYING") PlayState.play();
 	};
 	// A starting video may start more than once (TIDAL reports PLAYING, then loads it again), so the pause holds
 	// until a play (also on the desktop) or for as long as a load may take
