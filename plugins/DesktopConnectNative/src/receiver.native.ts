@@ -66,21 +66,16 @@ const lanAddresses = () =>
 // A new network (Wi-Fi, VPN, another address) is listened on within this time
 const addressCheckMs = 10_000;
 
-// TIDAL starts its own receiver (tidal_connect_application) with every window, it holds port 9000 on all addresses.
-// Windows still lets the port be taken on one address, and the phone's connections to that address come here.
+// Port 9000 may be held on all addresses by another receiver: TIDAL's own (tidal_connect_application, started with every
+// window) or TidaLunar's. Windows gives a connection to the socket bound to its exact address before one bound to all
+// addresses, so the receiver listens on each network address (and loopback): the phone's connections come here.
+// Listening on all addresses instead may succeed next to the other receiver (IPv6 dual stack next to its IPv4) and get nothing.
 // The addresses change with the network, they are checked again every few seconds
+const listenHosts = () => [...lanAddresses(), "127.0.0.1"];
 const listen = async (cert: string | Buffer, key: string | Buffer) => {
-	const options = { cert, key, port: connectPort, toPlayer, log };
-	try {
-		return { receiver: await ConnectReceiver.start(options) };
-	} catch (err) {
-		const code = (err as NodeJS.ErrnoException).code;
-		if (code === "EADDRINUSE") log(`Port ${connectPort} is taken (TIDAL's own receiver), listening on the network addresses`);
-		else log(`Cannot listen on port ${connectPort} on all addresses, trying the network addresses`, code ?? err);
-	}
-	const receiver = await ConnectReceiver.start({ ...options, hosts: lanAddresses() });
+	const receiver = await ConnectReceiver.start({ cert, key, port: connectPort, toPlayer, log, hosts: listenHosts() });
 	if (!receiver.listening) log(`Cannot listen on port ${connectPort} on any network address yet, phones will not find the receiver`);
-	const watchAddresses = setInterval(() => receiver.setHosts(lanAddresses()).catch(log), addressCheckMs);
+	const watchAddresses = setInterval(() => receiver.setHosts(listenHosts()).catch(log), addressCheckMs);
 	return { receiver, watchAddresses };
 };
 
