@@ -63,7 +63,7 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		commands = commands.then(() => (unloaded ? undefined : run(command))).catch(trace.err.withContext(`receiver ${command.type}`));
 	});
 
-	// The phone's volume slider and keys go from the desktop's volume: told when it changes, by the desktop user or the phone
+	// The phone's volume slider goes from the desktop's volume: told when it changes, by the desktop user or the phone
 	let reportedVolume: string | undefined;
 	const reportVolume = () => {
 		const { volume, muted } = redux.store.getState().playbackControls;

@@ -41,7 +41,7 @@ export type PlayerEvent =
 	| { type: "play" }
 	// The desktop user played something of their own (another album or track): the phone's media stopped, the player is let go
 	| { type: "takenOver" }
-	// The desktop's volume (0..1) and mute, also after the phone set them: the phone's slider and volume keys go from it
+	// The desktop's volume (0..1) and mute, also after the phone set them: the phone's volume slider goes from it
 	| { type: "volume"; level: number; mute: boolean };
 
 type Json = Record<string, any>;
@@ -85,6 +85,8 @@ export type ReceiverOptions = {
 };
 
 const pingIntervalMs = 15_000;
+// After the phone set the volume its slider is left alone this long: the player's late reports of the drag are not sent back
+const phoneVolumeQuietMs = 1_000;
 const pingTimeoutMs = 31_000;
 const progressIntervalMs = 1_000;
 const httpTimeoutMs = 30_000;
@@ -248,6 +250,7 @@ export class ConnectReceiver {
 	async stop() {
 		this.stopped = true;
 		clearInterval(this.pingTimer);
+		clearTimeout(this.volumeTimer);
 		this.endSession(false);
 		for (const socket of this.sockets.keys()) socket.terminate();
 		this.wss.close();
@@ -307,21 +310,40 @@ export class ConnectReceiver {
 		for (const socket of this.session?.members ?? []) this.send(socket, message);
 	}
 
-	// The desktop's volume as the phone knows it (TIDAL's notifyDeviceStatusChanged, level 0..1)
+	// The desktop's volume (TIDAL's notifyDeviceStatusChanged, level 0..1) and what the phone was told or set itself
 	private volume: { level: number; mute: boolean } | undefined;
+	private told: { level?: number; mute?: boolean } = {};
+	// While the phone drags its slider the player's reports lag behind it: an older level would move the slider back
+	private phoneVolumeUntil = 0;
+	private volumeTimer: ReturnType<typeof setTimeout> | undefined;
 	private deviceStatus() {
-		return { command: "notifyDeviceStatusChanged", volume: { level: this.volume!.level, mute: this.volume!.mute } };
+		const { level, mute } = this.volume!;
+		this.told = { level, mute };
+		return { command: "notifyDeviceStatusChanged", volume: { level, mute } };
 	}
 	private sendVolume(socket: WebSocket) {
 		if (this.volume !== undefined) this.send(socket, this.deviceStatus());
 	}
 	private setVolume(level: number, mute: boolean) {
 		if (!Number.isFinite(level)) return;
-		level = Math.min(Math.max(level, 0), 1);
+		this.volume = { level: Math.min(Math.max(level, 0), 1), mute };
+		this.tellVolume();
+	}
+	private phoneSetVolume(volume: { level?: number; mute?: boolean }) {
+		this.told = { ...this.told, ...volume };
+		this.phoneVolumeUntil = Date.now() + phoneVolumeQuietMs;
+	}
+	private tellVolume() {
+		clearTimeout(this.volumeTimer);
+		this.volumeTimer = undefined;
+		if (this.volume === undefined || this.session === undefined || this.session.suspended) return;
+		const wait = this.phoneVolumeUntil - Date.now();
+		// Told once the phone stopped, if the player then has another level than the phone's last
+		if (wait > 0) return void (this.volumeTimer = setTimeout(() => this.tellVolume(), wait));
+		const { level, mute } = this.volume;
 		// The player rounds what the phone set, that is no change to tell
-		if (this.volume !== undefined && Math.abs(this.volume.level - level) < 0.01 && this.volume.mute === mute) return;
-		this.volume = { level, mute };
-		if (this.session !== undefined && !this.session.suspended) this.toSession(this.deviceStatus());
+		if (this.told.level !== undefined && Math.abs(this.told.level - level) < 0.01 && this.told.mute === mute) return;
+		this.toSession(this.deviceStatus());
 	}
 	// #endregion
 
@@ -370,13 +392,12 @@ export class ConnectReceiver {
 				return 0;
 			case "setVolume":
 				if (typeof message.level !== "number" || !Number.isFinite(message.level)) return 0;
-				// Known at once: the player's report of it is not sent back while the phone drags its slider
-				if (this.volume !== undefined) this.volume.level = message.level;
+				this.phoneSetVolume({ level: message.level });
 				toPlayer({ type: "volume", level: message.level });
 				return 0;
 			case "setMute":
 				if (typeof message.mute !== "boolean") return 0;
-				if (this.volume !== undefined) this.volume.mute = message.mute;
+				this.phoneSetVolume({ mute: message.mute });
 				toPlayer({ type: "mute", mute: message.mute });
 				return 0;
 			case "loadCloudQueue":
