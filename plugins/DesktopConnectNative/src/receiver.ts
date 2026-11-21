@@ -3,7 +3,7 @@ import { ipcRenderer, MediaItem, PlayState, redux } from "@luna/lib";
 
 import type { DesktopQueueItem, PlayerCommand, PlayerState } from "./connect/ConnectReceiver";
 import { playerEvent, startReceiver, stopReceiver } from "./receiver.native";
-import { settings } from "./Settings";
+import { allowedAccountIds, applyAccounts, computerAccount, settings } from "./Settings";
 
 const { trace } = Tracer("[DesktopConnectNative]");
 
@@ -59,8 +59,15 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		unloadSet(mirrorUnloads);
 		stopReceiver().catch(trace.err.withContext("stop receiver"));
 	});
-	const { firstPort, deviceName, allowedAddresses, allowAnyAddress } = settings;
-	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, { firstPort, deviceName, allowedAddresses, allowAnyAddress }).catch(trace.err.withContext("start receiver"));
+	const { firstPort, deviceName, allowedAddresses, allowAnyAddress, anyAccount } = settings;
+	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, {
+		firstPort,
+		deviceName,
+		allowedAddresses,
+		allowAnyAddress,
+		accountIds: allowedAccountIds(),
+		anyAccount,
+	}).catch(trace.err.withContext("start receiver"));
 	if (started === undefined) return false;
 	if (unloaded) return true;
 	trace.log(`TIDAL Connect receiver on port ${started.port}`);
@@ -70,6 +77,18 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 	ipcRenderer.on(unloads, receiverChannel, (command: PlayerCommand) => {
 		commands = commands.then(() => (unloaded ? undefined : run(command))).catch(trace.err.withContext(`receiver ${command.type}`));
 	});
+
+	// The phone's TIDAL account must be the one signed in here (or one in the settings): it follows a sign-in or sign-out
+	let account = computerAccount();
+	unloads.add(
+		redux.store.subscribe(() => {
+			if (computerAccount() === account) return;
+			account = computerAccount();
+			applyAccounts().catch(trace.err.withContext("allowed accounts"));
+		}),
+	);
+	// Signed in while the receiver started
+	applyAccounts().catch(trace.err.withContext("allowed accounts"));
 
 	// The phone's volume slider goes from the desktop's volume: told when it changes, by the desktop user or the phone
 	let reportedVolume: string | undefined;

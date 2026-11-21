@@ -100,7 +100,18 @@ export type ReceiverOptions = {
 	// Whether a connection from the address is let in (the WebSocket and serviceInfoPath), any when not given (tests).
 	// Checked before TLS, others are dropped at once
 	isAllowedAddress?: (address: string | undefined) => boolean;
+	// Whether a phone signed in to this TIDAL account (user id) may use the receiver, any phone when not given (tests).
+	// The account is asked of TIDAL with the token the phone loads its first queue with: until then the phone's session
+	// only waits, the session held (another phone's) and the player are left alone
+	isAllowedAccount?: (userId: string) => boolean;
+	// Where the account is asked for (tests)
+	accountUrl?: string;
 };
+
+// Answers the token's account: {"userId": 123, "countryCode": ..., ...}
+export const tidalAccountUrl = "https://api.tidal.com/v1/sessions";
+// Short: the check runs in turn with the commands, the held session waits for it
+const accountTimeoutMs = 4_000;
 
 export const serviceInfoPath = "/tidalconnect/service";
 export type ServiceInfo = { name: string; type: string; port: number; txt: Record<string, string> };
@@ -157,6 +168,10 @@ export class ConnectReceiver {
 	private readonly isTrustedUrl: (url: string) => boolean;
 
 	private session?: { id: string; members: Set<WebSocket>; suspended: boolean };
+	// Phones told their session started whose TIDAL account is not checked yet (isAllowedAccount), with the queue server they gave
+	private readonly waiting = new Map<WebSocket, { id: string; servers?: ServerInfo }>();
+	// TIDAL accounts a phone was refused for, logged once
+	private readonly refusedAccounts = new Set<string>();
 
 	// The queue the phone loaded, the queue server sends a window of it around the current item
 	private queueServer?: ServerInfo;
@@ -305,6 +320,7 @@ export class ConnectReceiver {
 		this.stopped = true;
 		clearInterval(this.pingTimer);
 		clearTimeout(this.volumeTimer);
+		this.waiting.clear();
 		this.endSession(false);
 		for (const socket of this.sockets.keys()) socket.terminate();
 		this.wss.close();
@@ -346,6 +362,7 @@ export class ConnectReceiver {
 
 	private onClose(socket: WebSocket) {
 		this.sockets.delete(socket);
+		this.waiting.delete(socket);
 		const session = this.session;
 		if (session === undefined || !session.members.delete(socket)) return;
 		// Kept for a resumeSession, the phone reconnects to it after a network change or when the app comes back
@@ -411,9 +428,21 @@ export class ConnectReceiver {
 			case "resumeSession":
 				return this.resumeSession(socket, message.sessionId);
 			case "endSession":
+				if (this.waiting.get(socket)?.id === message.sessionId) {
+					this.waiting.delete(socket);
+					return this.send(socket, { command: "notifySessionEnded", sessionId: message.sessionId, suspended: false });
+				}
 				if (!this.session?.members.has(socket) || message.sessionId !== this.session.id)
 					return this.send(socket, { command: "notifySessionError", requestedCommand: "endSession", error: "Invalid SessionId" });
 				return this.endSession(message.stopCasting === true);
+		}
+		const waiting = this.waiting.get(socket);
+		if (waiting !== undefined) {
+			const checked = await this.checkAccount(socket, waiting, message);
+			if (checked !== true) {
+				if (typeof requestId === "number") this.send(socket, { command: "notifyRequestResult", requestId, resultCode: checked });
+				return;
+			}
 		}
 		// Everything else is only for the session's phones
 		if (!this.session?.members.has(socket)) return this.log("dropped", command, "(not in the session)");
@@ -539,6 +568,74 @@ export class ConnectReceiver {
 
 	// #region Session
 	private startSession(socket: WebSocket) {
+		const id = randomUUID();
+		// A phone that started before and still waits starts again
+		this.waiting.delete(socket);
+		// A phone of the session held was checked already
+		const member = this.session?.members.has(socket) === true;
+		if (this.options.isAllowedAccount !== undefined && !member) {
+			this.waiting.set(socket, { id });
+			this.log("session waits for the phone's TIDAL account", id);
+			return this.send(socket, { command: "notifySessionStarted", sessionId: id, joined: false });
+		}
+		this.openSession(socket, id);
+		this.send(socket, { command: "notifySessionStarted", sessionId: id, joined: false });
+		this.sendVolume(socket);
+	}
+
+	// A waiting phone's command: its first queue load (with its token) asks TIDAL for its account. True when the session
+	// opened (the command then runs in it), otherwise the result for the phone
+	private async checkAccount(socket: WebSocket, waiting: { id: string; servers?: ServerInfo }, message: Json): Promise<true | number> {
+		if (message.queueServerInfo) waiting.servers = message.queueServerInfo;
+		if (message.command === "updateServerInfo") return 0;
+		if (message.command !== "loadCloudQueue") {
+			this.log("dropped", message.command, "(the phone's TIDAL account is not checked yet)");
+			return 1002;
+		}
+		let userId: string | undefined;
+		try {
+			userId = await this.accountOf(waiting.servers);
+		} catch (err) {
+			this.log("could not ask TIDAL for the phone's account", err);
+		}
+		// Closed, started again or the receiver stopped meanwhile
+		if (this.stopped || this.waiting.get(socket) !== waiting) return 1002;
+		this.waiting.delete(socket);
+		if (userId !== undefined && this.options.isAllowedAccount!(userId)) {
+			this.log("the phone's TIDAL account", userId, "is allowed");
+			this.openSession(socket, waiting.id);
+			this.queueServer = waiting.servers;
+			this.sendVolume(socket);
+			return true;
+		}
+		if (userId === undefined) this.log("Refused a phone: TIDAL did not tell its account");
+		else if (!this.refusedAccounts.has(userId)) {
+			this.refusedAccounts.add(userId);
+			this.log("Refused a phone of TIDAL account", userId, "(not an allowed account)");
+		}
+		this.send(socket, { command: "notifySessionEnded", sessionId: waiting.id, suspended: false });
+		socket.close();
+		return 1002;
+	}
+
+	// The TIDAL account (user id) of the token, undefined without one
+	private async accountOf(server: ServerInfo | undefined) {
+		const auth = server === undefined ? undefined : this.authHeader(server);
+		if (auth === undefined) return undefined;
+		const url = this.options.accountUrl ?? tidalAccountUrl;
+		if (!this.isTrustedUrl(url)) throw new Error(`Untrusted account url ${url}`);
+		const res = await fetch(url, { headers: { Authorization: auth }, signal: AbortSignal.timeout(accountTimeoutMs) });
+		if (!res.ok) throw new Error(`HTTP ${res.status}`);
+		const { userId } = (await res.json()) as Json;
+		return typeof userId === "number" || (typeof userId === "string" && userId !== "") ? String(userId) : undefined;
+	}
+
+	// The TIDAL accounts a phone was refused for
+	get refusedTidalAccounts() {
+		return [...this.refusedAccounts];
+	}
+
+	private openSession(socket: WebSocket, id: string) {
 		// A new session replaces the one held, its other phones are told it is over
 		const old = this.session;
 		if (old !== undefined) {
@@ -546,10 +643,8 @@ export class ConnectReceiver {
 			if (!old.suspended) this.options.toPlayer({ type: "release" });
 			this.clearQueue();
 		}
-		this.session = { id: randomUUID(), members: new Set([socket]), suspended: false };
-		this.log("session started", this.session.id);
-		this.send(socket, { command: "notifySessionStarted", sessionId: this.session.id, joined: false });
-		this.sendVolume(socket);
+		this.session = { id, members: new Set([socket]), suspended: false };
+		this.log("session started", id);
 	}
 
 	private resumeSession(socket: WebSocket, sessionId: unknown) {

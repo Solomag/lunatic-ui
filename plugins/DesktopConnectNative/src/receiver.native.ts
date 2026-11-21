@@ -12,9 +12,17 @@ import { ConnectReceiver, type PlayerCommand, type PlayerEvent, type ServiceInfo
 import tidalCert from "file://./connect/tidal_server_cert.pem";
 
 // The mDNS responder is this module's own (luna bundles ciao into it, a reload gets a new one), it is shut down with the receiver
-type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout; deviceName?: string; access: Access };
+type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout; deviceName?: string; access: Access; accounts: Accounts };
 // Replaced when the user changes the allowed addresses, also for the receiver already running
 type Access = { allows: (address: string | undefined) => boolean };
+// The TIDAL accounts (user ids) whose phones may use the receiver, replaced when the computer's account or the setting changes
+type Accounts = { allows: (userId: string) => boolean };
+// User ids are numbers: "0123" is 123
+const accountKey = (id: string) => id.trim().replace(/^0+(?=\d)/, "");
+const accountFilter = (userIds: string[], anyAccount: boolean) => {
+	const allowed = new Set(userIds.map(accountKey).filter((id) => id !== "" && id !== "0"));
+	return (userId: string) => anyAccount || allowed.has(accountKey(userId));
+};
 declare const luna: { __desktopConnectNativeReceiver?: Running; __desktopConnectNativeChange?: Promise<unknown> };
 
 const receiverChannel = "desktopConnectNative.receiver";
@@ -95,26 +103,27 @@ const addressCheckMs = 10_000;
 // may succeed next to another receiver (IPv6 dual stack next to its IPv4) and get nothing.
 // The addresses change with the network, they are checked again every few seconds
 const listenHosts = () => [...lanAddresses(), "127.0.0.1"];
-const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number, access: Access) => {
+const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number, access: Access, accounts: Accounts) => {
 	const port = await freePort(firstPort);
-	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts(), serviceInfo, isAllowedAddress: (address) => access.allows(address) });
+	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts(), serviceInfo, isAllowedAddress: (address) => access.allows(address), isAllowedAccount: (userId) => accounts.allows(userId) });
 	if (!receiver.listening) log(`Cannot listen on port ${port} on any network address yet, phones will not find the receiver`);
 	const watchAddresses = setInterval(() => receiver.setHosts(listenHosts()).catch(log), addressCheckMs);
 	return { receiver, watchAddresses };
 };
 
 // Starts the own receiver, undefined without a key
-export type ReceiverSettings = { firstPort: number; deviceName: string; allowedAddresses: string; allowAnyAddress: boolean };
+export type ReceiverSettings = { firstPort: number; deviceName: string; allowedAddresses: string; allowAnyAddress: boolean; accountIds: string[]; anyAccount: boolean };
 export const startReceiver = (builtInKeyBase64: string, settings: ReceiverSettings) => oneAtATime(() => start(builtInKeyBase64, settings));
-const start = async (builtInKeyBase64: string, { firstPort, deviceName, allowedAddresses, allowAnyAddress }: ReceiverSettings): Promise<{ port: number } | undefined> => {
+const start = async (builtInKeyBase64: string, { firstPort, deviceName, allowedAddresses, allowAnyAddress, accountIds, anyAccount }: ReceiverSettings): Promise<{ port: number } | undefined> => {
 	if (running.__desktopConnectNativeReceiver) return { port: running.__desktopConnectNativeReceiver.receiver.port };
 	const keys = await loadKeys(builtInKeyBase64);
 	if (keys === undefined) return undefined;
 	const { cert, key } = keys;
 	const access: Access = { allows: addressFilter(allowedAddresses, allowAnyAddress) };
-	const { receiver, watchAddresses } = await listen(cert, key, firstPort, access);
+	const accounts: Accounts = { allows: accountFilter(accountIds, anyAccount) };
+	const { receiver, watchAddresses } = await listen(cert, key, firstPort, access, accounts);
 	// Kept at once, so a failed advertise below still stops the receiver
-	const current: Running = { receiver, responder: getResponder(), watchAddresses, access };
+	const current: Running = { receiver, responder: getResponder(), watchAddresses, access, accounts };
 	running.__desktopConnectNativeReceiver = current;
 	try {
 		await advertise(current, deviceName);
@@ -169,6 +178,17 @@ export const setAllowedAddresses = (allowedAddresses: string, allowAnyAddress: b
 		if (current !== undefined) current.access.allows = addressFilter(allowedAddresses, allowAnyAddress);
 		return parseAddresses(allowedAddresses).invalid;
 	});
+
+// The computer's TIDAL account and the other allowed ones. Applies to phones that connect from now on (connected ones stay)
+export const setAllowedAccounts = (accountIds: string[], anyAccount: boolean) =>
+	oneAtATime(async () => {
+		const current = running.__desktopConnectNativeReceiver;
+		// A receiver started by an older version (kept across a plugin reload) has no account check
+		if (current?.accounts !== undefined) current.accounts.allows = accountFilter(accountIds, anyAccount);
+	});
+
+// The TIDAL accounts a phone was refused for since the receiver started
+export const refusedAccounts = async () => running.__desktopConnectNativeReceiver?.receiver.refusedTidalAccounts ?? [];
 
 export const stopReceiver = () => oneAtATime(stop);
 const stop = async () => {
