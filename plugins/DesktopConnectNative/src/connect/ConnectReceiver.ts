@@ -82,7 +82,12 @@ export type ReceiverOptions = {
 	log?: (...args: unknown[]) => void;
 	// Tests point the receiver at a local queue server
 	isTrustedUrl?: (url: string) => boolean;
+	// The mDNS record the receiver is announced with, answered at serviceInfoPath
+	serviceInfo?: () => ServiceInfo | undefined;
 };
+
+export const serviceInfoPath = "/tidalconnect/service";
+export type ServiceInfo = { name: string; type: string; port: number; txt: Record<string, string> };
 
 const pingIntervalMs = 15_000;
 // After the phone set the volume its slider is left alone this long: the player's late reports of the drag are not sent back
@@ -168,7 +173,12 @@ export class ConnectReceiver {
 	private constructor(private readonly options: ReceiverOptions) {
 		this.log = options.log ?? (() => {});
 		this.isTrustedUrl = options.isTrustedUrl ?? isTidalUrl;
-		this.server = createServer({ cert: options.cert, key: options.key });
+		this.server = createServer({ cert: options.cert, key: options.key }, (request, response) => {
+			// Where mDNS does not reach (a phone over Tailscale on mobile data), a module on the phone asks for the record here
+			const service = request.method === "GET" && request.url === serviceInfoPath ? options.serviceInfo?.() : undefined;
+			if (service === undefined) return void response.writeHead(404).end();
+			response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(service));
+		});
 		// The phone's messages are small JSON, ws would accept 100 MiB
 		this.wss = new WebSocketServer({ server: this.server, maxPayload: 1024 * 1024 });
 		// ws forwards the server's errors (port in use) and would throw them without a listener

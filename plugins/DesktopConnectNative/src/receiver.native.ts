@@ -6,12 +6,12 @@ import { createServer } from "net";
 import { hostname, networkInterfaces } from "os";
 import path from "path";
 
-import { ConnectReceiver, type PlayerCommand, type PlayerEvent } from "./connect/ConnectReceiver";
+import { ConnectReceiver, type PlayerCommand, type PlayerEvent, type ServiceInfo } from "./connect/ConnectReceiver";
 // TIDAL's desktop server certificate, public. The phone only trusts it (signed by TIDAL's CA)
 import tidalCert from "file://./connect/tidal_server_cert.pem";
 
 // The mDNS responder is this module's own (luna bundles ciao into it, a reload gets a new one), it is shut down with the receiver
-type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout };
+type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout; deviceName?: string };
 declare const luna: { __desktopConnectNativeReceiver?: Running; __desktopConnectNativeChange?: Promise<unknown> };
 
 const receiverChannel = "desktopConnectNative.receiver";
@@ -94,7 +94,7 @@ const addressCheckMs = 10_000;
 const listenHosts = () => [...lanAddresses(), "127.0.0.1"];
 const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number) => {
 	const port = await freePort(firstPort);
-	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts() });
+	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts(), serviceInfo });
 	if (!receiver.listening) log(`Cannot listen on port ${port} on any network address yet, phones will not find the receiver`);
 	const watchAddresses = setInterval(() => receiver.setHosts(listenHosts()).catch(log), addressCheckMs);
 	return { receiver, watchAddresses };
@@ -128,6 +128,7 @@ const deviceTxt = (deviceName: string) => {
 	return { mn: "TidaLuna", id, fn: deviceName.trim() === "" ? defaultDeviceName() : deviceName.trim(), ca: "0", ve: "1" };
 };
 const advertise = async (current: Running, deviceName: string) => {
+	current.deviceName = deviceName;
 	current.service = current.responder.createService({
 		disabledIpv6: true,
 		port: current.receiver.port,
@@ -138,9 +139,24 @@ const advertise = async (current: Running, deviceName: string) => {
 	await current.service.advertise();
 };
 
+// The record as announced (ciao renames the service on a name conflict), for a phone mDNS does not reach
+const serviceInfo = (): ServiceInfo | undefined => {
+	const current = running.__desktopConnectNativeReceiver;
+	if (current?.service === undefined) return undefined;
+	// "<name>.<type PTR>"
+	const fqdn = current.service.getFQDN();
+	const name = fqdn.slice(0, fqdn.length - current.service.getTypePTR().length - 1);
+	return { name, type: "_tidalconnect._tcp", port: current.receiver.port, txt: deviceTxt(current.deviceName ?? "") };
+};
+
 // Announced at once, after a start that is still running
 export const setDeviceName = (deviceName: string) =>
-	oneAtATime(async () => running.__desktopConnectNativeReceiver?.service?.updateTxt(deviceTxt(deviceName)));
+	oneAtATime(async () => {
+		const current = running.__desktopConnectNativeReceiver;
+		if (current === undefined) return;
+		current.deviceName = deviceName;
+		current.service?.updateTxt(deviceTxt(deviceName));
+	});
 
 export const stopReceiver = () => oneAtATime(stop);
 const stop = async () => {
