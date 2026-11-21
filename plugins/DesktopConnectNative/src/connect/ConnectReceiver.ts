@@ -84,6 +84,9 @@ export type ReceiverOptions = {
 	isTrustedUrl?: (url: string) => boolean;
 	// The mDNS record the receiver is announced with, answered at serviceInfoPath
 	serviceInfo?: () => ServiceInfo | undefined;
+	// Whether a connection from the address is let in (the WebSocket and serviceInfoPath), any when not given (tests).
+	// Checked before TLS, others are dropped at once
+	isAllowedAddress?: (address: string | undefined) => boolean;
 };
 
 export const serviceInfoPath = "/tidalconnect/service";
@@ -130,6 +133,8 @@ export class ConnectReceiver {
 	private readonly listeners = new Map<string, TcpServer>();
 	// Addresses it could not listen on, logged once
 	private readonly failedHosts = new Set<string>();
+	// Addresses a connection was refused from, logged once
+	private readonly refusedAddresses = new Set<string>();
 	private readonly wss: WebSocketServer;
 	private readonly sockets = new Map<WebSocket, { alive: number }>();
 	private readonly pingTimer: NodeJS.Timeout;
@@ -240,7 +245,17 @@ export class ConnectReceiver {
 	}
 
 	private listen(host: string) {
-		const listener = createTcpServer((socket) => this.server.emit("connection", socket));
+		const listener = createTcpServer((socket) => {
+			const { remoteAddress } = socket;
+			if (this.options.isAllowedAddress?.(remoteAddress) === false) {
+				socket.destroy();
+				const address = remoteAddress ?? "unknown address";
+				if (this.refusedAddresses.has(address)) return;
+				this.refusedAddresses.add(address);
+				return this.log("Refused a connection from", address, "(not in the allowed addresses)");
+			}
+			this.server.emit("connection", socket);
+		});
 		return new Promise<void>((resolve, reject) => {
 			listener.once("error", reject);
 			listener.listen(this.options.port, host === "" ? undefined : host, () => {

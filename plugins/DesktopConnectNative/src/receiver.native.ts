@@ -6,12 +6,15 @@ import { createServer } from "net";
 import { hostname, networkInterfaces } from "os";
 import path from "path";
 
+import { addressFilter, parseAddresses } from "./connect/allowedAddresses";
 import { ConnectReceiver, type PlayerCommand, type PlayerEvent, type ServiceInfo } from "./connect/ConnectReceiver";
 // TIDAL's desktop server certificate, public. The phone only trusts it (signed by TIDAL's CA)
 import tidalCert from "file://./connect/tidal_server_cert.pem";
 
 // The mDNS responder is this module's own (luna bundles ciao into it, a reload gets a new one), it is shut down with the receiver
-type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout; deviceName?: string };
+type Running = { receiver: ConnectReceiver; responder: Responder; service?: CiaoService; watchAddresses?: NodeJS.Timeout; deviceName?: string; access: Access };
+// Replaced when the user changes the allowed addresses, also for the receiver already running
+type Access = { allows: (address: string | undefined) => boolean };
 declare const luna: { __desktopConnectNativeReceiver?: Running; __desktopConnectNativeChange?: Promise<unknown> };
 
 const receiverChannel = "desktopConnectNative.receiver";
@@ -92,25 +95,26 @@ const addressCheckMs = 10_000;
 // may succeed next to another receiver (IPv6 dual stack next to its IPv4) and get nothing.
 // The addresses change with the network, they are checked again every few seconds
 const listenHosts = () => [...lanAddresses(), "127.0.0.1"];
-const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number) => {
+const listen = async (cert: string | Buffer, key: string | Buffer, firstPort: number, access: Access) => {
 	const port = await freePort(firstPort);
-	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts(), serviceInfo });
+	const receiver = await ConnectReceiver.start({ cert, key, port, toPlayer, log, hosts: listenHosts(), serviceInfo, isAllowedAddress: (address) => access.allows(address) });
 	if (!receiver.listening) log(`Cannot listen on port ${port} on any network address yet, phones will not find the receiver`);
 	const watchAddresses = setInterval(() => receiver.setHosts(listenHosts()).catch(log), addressCheckMs);
 	return { receiver, watchAddresses };
 };
 
 // Starts the own receiver, undefined without a key
-export type ReceiverSettings = { firstPort: number; deviceName: string };
+export type ReceiverSettings = { firstPort: number; deviceName: string; allowedAddresses: string; allowAnyAddress: boolean };
 export const startReceiver = (builtInKeyBase64: string, settings: ReceiverSettings) => oneAtATime(() => start(builtInKeyBase64, settings));
-const start = async (builtInKeyBase64: string, { firstPort, deviceName }: ReceiverSettings): Promise<{ port: number } | undefined> => {
+const start = async (builtInKeyBase64: string, { firstPort, deviceName, allowedAddresses, allowAnyAddress }: ReceiverSettings): Promise<{ port: number } | undefined> => {
 	if (running.__desktopConnectNativeReceiver) return { port: running.__desktopConnectNativeReceiver.receiver.port };
 	const keys = await loadKeys(builtInKeyBase64);
 	if (keys === undefined) return undefined;
 	const { cert, key } = keys;
-	const { receiver, watchAddresses } = await listen(cert, key, firstPort);
+	const access: Access = { allows: addressFilter(allowedAddresses, allowAnyAddress) };
+	const { receiver, watchAddresses } = await listen(cert, key, firstPort, access);
 	// Kept at once, so a failed advertise below still stops the receiver
-	const current: Running = { receiver, responder: getResponder(), watchAddresses };
+	const current: Running = { receiver, responder: getResponder(), watchAddresses, access };
 	running.__desktopConnectNativeReceiver = current;
 	try {
 		await advertise(current, deviceName);
@@ -156,6 +160,14 @@ export const setDeviceName = (deviceName: string) =>
 		if (current === undefined) return;
 		current.deviceName = deviceName;
 		current.service?.updateTxt(deviceTxt(deviceName));
+	});
+
+// Applies to new connections at once (connected phones stay), returns the entries not understood
+export const setAllowedAddresses = (allowedAddresses: string, allowAnyAddress: boolean) =>
+	oneAtATime(async () => {
+		const current = running.__desktopConnectNativeReceiver;
+		if (current !== undefined) current.access.allows = addressFilter(allowedAddresses, allowAnyAddress);
+		return parseAddresses(allowedAddresses).invalid;
 	});
 
 export const stopReceiver = () => oneAtATime(stop);

@@ -53,8 +53,8 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		unloadSet(sessionUnloads);
 		stopReceiver().catch(trace.err.withContext("stop receiver"));
 	});
-	const { firstPort, deviceName } = settings;
-	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, { firstPort, deviceName }).catch(trace.err.withContext("start receiver"));
+	const { firstPort, deviceName, allowedAddresses, allowAnyAddress } = settings;
+	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, { firstPort, deviceName, allowedAddresses, allowAnyAddress }).catch(trace.err.withContext("start receiver"));
 	if (started === undefined) return false;
 	if (unloaded) return true;
 	trace.log(`TIDAL Connect receiver on port ${started.port}`);
