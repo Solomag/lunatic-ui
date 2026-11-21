@@ -47,12 +47,15 @@ export type PlayerEvent =
 	// The desktop user played something of their own (another album or track): the phone's media stopped, the player is let go
 	| { type: "takenOver" }
 	// While mirroring: the media the desktop plays now. elementId: its place in TIDAL's queue (the same track twice is two)
-	| { type: "desktopMedia"; elementId: string; mediaId: string; mediaType: number; positionMs: number; metadata: DesktopMetadata }
+	// queue: TIDAL's queue (or a part of it around the media), the phone is given a cloud queue of it to show the media from
+	| { type: "desktopMedia"; elementId: string; mediaId: string; mediaType: number; positionMs: number; metadata: DesktopMetadata; queue?: DesktopQueueItem[] }
 	// The desktop's volume (0..1) and mute, also after the phone set them: the phone's volume slider goes from it
 	| { type: "volume"; level: number; mute: boolean };
 
 // As the phone's SDK takes a media's metadata: a title is required, artists are names, duration in ms (left out when not known)
 export type DesktopMetadata = { title: string; albumTitle?: string; artists?: string[]; duration?: number };
+// An entry of TIDAL's queue: elementId is its place (the same track twice is two)
+export type DesktopQueueItem = { elementId: string; mediaId: string; mediaType: number };
 
 type Json = Record<string, any>;
 
@@ -116,6 +119,8 @@ const maxWindowMoves = 50;
 const walkTimeMs = 20_000;
 // Media that cannot play in a row are skipped up to this many, not round and round when none can
 const maxFailedInARow = 10;
+// While mirroring, the desktop's media is told again this long after the phone was given the cloud queue (it moves to the item once it read it)
+const mirrorResendMs = 1_500;
 
 // The phone hands over its own tokens, they must only ever go to TIDAL's servers
 export const isTidalUrl = (url: string) => {
@@ -167,6 +172,17 @@ export class ConnectReceiver {
 	// The desktop took the player for its own media: the phone is shown what the desktop plays (media is that, not the queue's),
 	// and its controls go to the desktop's. A load of the phone's (or its next with the queue) takes the player back
 	private mirroring = false;
+	// The phone shows only items of its cloud queue (notifyMediaChanged's metadata is not shown): while mirroring it is given
+	// a cloud queue made of the desktop's queue. signature: the desktop's queue it was made of, itemIds: its item per element
+	private mirrorQueue?: { signature: string; itemIds: Map<string, string> };
+	// The desktop's queue a cloud queue is being made of, and the latest one asked for while it is (made after it)
+	private mirrorQueueMaking?: string;
+	private mirrorQueueNext?: DesktopQueueItem[];
+	// Counted when mirroring starts or ends: a cloud queue made for an earlier one is not given to the phone
+	private mirrorGeneration = 0;
+	private mirrorResendTimer?: NodeJS.Timeout;
+	// The desktop's media's entry in its queue
+	private mirrorElementId?: string;
 
 	// What the player reported last
 	private playerState: PlayerState = "IDLE";
@@ -573,7 +589,7 @@ export class ConnectReceiver {
 
 	private clearQueue() {
 		this.queueServer = this.queueInfo = this.media = undefined;
-		this.mirroring = false;
+		this.setMirroring(false);
 		this.clearItems();
 		this.playerState = "IDLE";
 		this.positionMs = 0;
@@ -975,7 +991,7 @@ export class ConnectReceiver {
 	private setMedia(media: MediaInfo, autoplay = true, position?: unknown) {
 		const positionMs = typeof position === "number" && Number.isFinite(position) && position > 0 ? position : 0;
 		// The player follows the phone again (the load stops its mirroring)
-		this.mirroring = false;
+		this.setMirroring(false);
 		this.media = media;
 		this.autoplay = autoplay;
 		this.positionMs = positionMs;
@@ -1068,22 +1084,120 @@ export class ConnectReceiver {
 				// The phone is shown what the desktop plays and controls it, the queue stays for a load of the phone's (which takes the player back)
 				this.log("the desktop played its own media");
 				this.media = undefined;
-				this.mirroring = true;
+				this.setMirroring(true);
 				this.finished = false;
 				this.options.toPlayer({ type: "mirror" });
 				return;
 			case "desktopMedia": {
 				// A late one after the phone's load took the player back
 				if (!this.mirroring) return;
-				const { elementId, mediaId, mediaType, positionMs, metadata } = event;
-				this.media = { itemId: `desktop:${elementId}`, mediaId, mediaType, metadata };
+				const { elementId, mediaId, mediaType, positionMs, metadata, queue } = event;
+				// Its item in the cloud queue made of the desktop's queue, the phone shows it from there
+				this.mirrorElementId = elementId;
+				const itemId = this.mirrorQueue?.itemIds.get(elementId) ?? `desktop:${elementId}`;
+				this.media = { itemId, mediaId, mediaType, metadata };
 				if (Number.isFinite(positionMs)) this.positionMs = positionMs;
-				this.log("desktop media", mediaId);
+				this.log("desktop media", mediaId, itemId);
 				this.toSession(this.mediaChanged(this.media));
-				return this.toSession(this.playerStatus());
+				this.toSession(this.playerStatus());
+				if (queue !== undefined && queue.length !== 0) this.makeMirrorQueue(queue);
+				return;
 			}
 		}
 	}
+
+	// #region Mirror queue
+	private setMirroring(mirroring: boolean) {
+		this.mirroring = mirroring;
+		this.mirrorGeneration++;
+		this.mirrorQueue = this.mirrorQueueMaking = this.mirrorQueueNext = this.mirrorElementId = undefined;
+		clearTimeout(this.mirrorResendTimer);
+	}
+
+	// Makes a cloud queue of the desktop's queue (with the phone's token) and gives it to the phone, unless it has it already.
+	// Not waited for: a queue server that is slow does not hold the phone's commands
+	private makeMirrorQueue(queue: DesktopQueueItem[]) {
+		const signature = queue.map((item) => item.elementId).join(",");
+		// The one being made is followed by the latest one asked for meanwhile (none when that is the one being made)
+		if (this.mirrorQueueMaking !== undefined) return void (this.mirrorQueueNext = signature === this.mirrorQueueMaking ? undefined : queue);
+		if (signature === this.mirrorQueue?.signature || this.queueServer === undefined) return;
+		this.mirrorQueueMaking = signature;
+		const generation = this.mirrorGeneration;
+		this.createMirrorQueue(queue, signature, generation)
+			.catch((err) => this.log("mirror queue failed", err))
+			.finally(() => {
+				if (generation !== this.mirrorGeneration) return;
+				this.mirrorQueueMaking = undefined;
+				const next = this.mirrorQueueNext;
+				this.mirrorQueueNext = undefined;
+				if (next !== undefined) this.makeMirrorQueue(next);
+			});
+	}
+
+	private async createMirrorQueue(queue: DesktopQueueItem[], signature: string, generation: number) {
+		const server = this.queueServer;
+		if (server === undefined) return;
+		// The queue server takes TIDAL's numeric ids only (an upload or a local file is left out)
+		const entries = queue.filter((item) => /^\d+$/.test(item.mediaId));
+		if (entries.length === 0) return;
+		const created = await this.queueRequest("POST", server.serverUrl, {
+			body: {
+				items: entries.map((item, index) => ({
+					media_id: Number(item.mediaId),
+					type: item.mediaType === 1 ? "video" : "track",
+					properties: { active: true, original_order: index },
+				})),
+				repeat_mode: "off",
+				shuffled: false,
+			},
+		});
+		if (generation !== this.mirrorGeneration || !this.mirroring) return;
+		const queueId = typeof created.id === "string" || typeof created.id === "number" ? String(created.id) : undefined;
+		if (queueId === undefined || queueId === "") throw new Error("No queue id");
+		// The items come back in the order sent, each with its id
+		let items: Json[] = Array.isArray(created.items) ? created.items : [];
+		if (items.length < entries.length) {
+			// Failing, the queue is given as it came (its items not named are by their element): not made again for each media
+			const page = await this.queueRequest("GET", `${server.serverUrl}/${queueId}/items?offset=0&limit=${entries.length}`).catch((err) => {
+				this.log("mirror queue items failed", err);
+				return undefined;
+			});
+			if (generation !== this.mirrorGeneration || !this.mirroring) return;
+			if (Array.isArray(page?.items)) items = page.items;
+		}
+		const itemIds = new Map<string, string>();
+		entries.forEach((entry, index) => {
+			const item = items[index];
+			if (item !== undefined && item.id !== undefined && String(item.media_id) === entry.mediaId) itemIds.set(entry.elementId, String(item.id));
+		});
+		this.mirrorQueue = { signature, itemIds };
+		this.queueInfo = {
+			queueId,
+			repeatMode: "NONE",
+			shuffled: false,
+			maxBeforeSize: this.queueInfo?.maxBeforeSize ?? windowSizeOf(undefined),
+			maxAfterSize: this.queueInfo?.maxAfterSize ?? windowSizeOf(undefined),
+		};
+		// The receiver's window was the phone's queue
+		this.clearItems();
+		this.log("mirror queue", queueId, itemIds.size, "items");
+		this.toSession({ command: "notifyQueueChanged", queueInfo: this.queueInfo });
+		this.sendMirrorMedia();
+		// The phone moves to the item only once it has read the new queue: told again a moment later
+		clearTimeout(this.mirrorResendTimer);
+		this.mirrorResendTimer = setTimeout(() => this.sendMirrorMedia(), mirrorResendMs);
+	}
+
+	// The desktop's media by its item in the cloud queue
+	private sendMirrorMedia() {
+		let media = this.media;
+		if (!this.mirroring || media === undefined || this.mirrorElementId === undefined) return;
+		const itemId = this.mirrorQueue?.itemIds.get(this.mirrorElementId) ?? `desktop:${this.mirrorElementId}`;
+		this.media = media = { ...media, itemId };
+		this.toSession(this.mediaChanged(media));
+		this.toSession(this.playerStatus());
+	}
+	// #endregion
 
 	// The phone's or the desktop's play, also of a media that ended (the player loads it again)
 	// Without a media (stopped) nothing plays, the player's states stay the phone's no more

@@ -1,7 +1,7 @@
 import { type LunaUnload, Tracer, unloadSet } from "@luna/core";
 import { ipcRenderer, MediaItem, PlayState, redux } from "@luna/lib";
 
-import type { PlayerCommand, PlayerState } from "./connect/ConnectReceiver";
+import type { DesktopQueueItem, PlayerCommand, PlayerState } from "./connect/ConnectReceiver";
 import { playerEvent, startReceiver, stopReceiver } from "./receiver.native";
 import { settings } from "./Settings";
 
@@ -14,6 +14,9 @@ declare const __TIDAL_SERVER_KEY_BASE64__: string;
 const receiverChannel = "desktopConnectNative.receiver";
 // Loading a video can take over 5s
 const loadTimeoutMs = 10000;
+// The part of TIDAL's queue the phone is given while mirroring: entries before the current one and in all
+const mirrorQueueBefore = 100;
+const mirrorQueueSize = 500;
 // The desktop's previous starts the track again after this many seconds of it
 const restartAfterS = 3;
 
@@ -525,6 +528,20 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		desktopPositionS = seconds;
 		playerEvent({ type: "progress", positionMs: seconds * 1000, seeked });
 	};
+	// TIDAL's queue, the phone is given a cloud queue of it (it shows only its queue's items). A long one only around the current entry
+	const desktopQueue = (): DesktopQueueItem[] => {
+		const { elements, currentIndex } = PlayState.playQueue;
+		// The part moves in steps (not with each track, each move is a new cloud queue): it starts at a multiple of the step,
+		// the current entry with at least mirrorQueueBefore entries before it (where there are)
+		const step = mirrorQueueSize - mirrorQueueBefore;
+		const start = Math.max(0, Math.min(Math.floor(Math.max(0, currentIndex - mirrorQueueBefore) / step) * step, elements.length - mirrorQueueSize));
+		const mediaItems = redux.store.getState().content?.mediaItems ?? {};
+		return elements.slice(start, start + mirrorQueueSize).map((element: redux.PlayQueueElement) => ({
+			elementId: element.uid,
+			mediaId: String(element.mediaItemId),
+			mediaType: mediaItems[String(element.mediaItemId)]?.type === "video" ? 1 : 0,
+		}));
+	};
 	// Each media looked up in turn, an older lookup that ends late is not told
 	let mediaLookups = 0;
 	const reportDesktopMedia = async ({ productId, productType, referenceId }: { productId?: redux.ItemId | null; productType?: string; referenceId?: string }) => {
@@ -543,9 +560,13 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 		const artists = (tidalItem?.artists ?? []).map((artist) => artist?.name).filter((artist): artist is string => typeof artist === "string" && artist !== "");
 		const albumTitle = tidalItem?.album?.title;
 		const durationS = tidalItem?.duration ?? PlayState.playbackContext?.actualDuration;
+		// Its entry in TIDAL's queue (the same track twice is two), the media itself when it is not there
+		const current = currentElement();
+		const elementId = current !== undefined && String(current.mediaItemId) === String(productId) ? current.uid : String(referenceId ?? productId);
 		playerEvent({
 			type: "desktopMedia",
-			elementId: String(referenceId ?? productId),
+			elementId,
+			queue: desktopQueue(),
 			mediaId: String(productId),
 			mediaType: contentType === "video" ? 1 : 0,
 			positionMs: desktopPositionS * 1000,
