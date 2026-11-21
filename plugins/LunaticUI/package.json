@@ -1,6 +1,6 @@
 {
   "name": "@solomag/lunatic-ui",
-  "version": "0.43.0",
+  "version": "0.44.0",
   "description": "A TIDAL-native Luna Settings page: installed plugins grouped by state, a fast plugin store with search, TIDAL's own colours and icons, and a confirmation before Log Out.",
   "author": {
     "name": "Solomag"
