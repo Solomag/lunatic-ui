@@ -30,7 +30,7 @@ import {
 import { LunaticFeatureFlags } from "./FeatureFlags";
 import { LiveOffGlyph, LiveOnGlyph, SettingsGlyph } from "./icons";
 import { requestJson } from "../net";
-import { installAdaptivePluginSettingsLayout } from "./plugin-settings-layout";
+import { lunaFeatures } from "../luna-features";
 import { LunaticSearch, LunaticSelect } from "./controls";
 
 type LunaRelease = {
@@ -51,7 +51,20 @@ const AdaptivePluginSettingsShell = React.memo(({ Settings }: { Settings: React.
   React.useEffect(() => {
     const root = rootRef.current;
     if (!root) return;
-    return installAdaptivePluginSettingsLayout(root);
+    // Luna with MuiTheme: compact layout through theme overrides. Older Luna: the DOM observer fallback.
+    const install = lunaFeatures.themeOverrides
+      ? import("./plugin-settings-theme").then((m) => m.holdPluginSettingsTheme())
+      : import("./plugin-settings-layout").then((m) => m.installAdaptivePluginSettingsLayout(root));
+    let cleanup: (() => void) | undefined;
+    let unmounted = false;
+    install.then((release) => {
+      if (unmounted) release();
+      else cleanup = release;
+    });
+    return () => {
+      unmounted = true;
+      cleanup?.();
+    };
   }, []);
 
   return (

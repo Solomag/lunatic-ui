@@ -1361,6 +1361,12 @@ div[class^="_mainContainer"] > div[class^="_bar"] > div[class^="_title"] * {
   min-width: 0 !important;
 }
 
+[data-lunatic-adaptive-core-plugin-settings="true"]:has(> .LunaSettings-root) > br {
+  display: none !important;
+}
+
+/* With MuiTheme (TidaLuna 1.21.9+) the cards are styled by plugin-settings-theme.ts, this only places them. */
+[data-lunatic-adaptive-core-plugin-settings="true"]:has(> .LunaSettings-root),
 [data-lunatic-adaptive-core-plugin-settings="true"][data-lunatic-setting-groups-grid="true"] {
   display: grid !important;
   grid-template-columns: repeat(2, minmax(0, 1fr)) !important;

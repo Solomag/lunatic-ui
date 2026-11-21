@@ -30,7 +30,7 @@ export const lunaFeatures = {
   settingsTabs: typeof ui.SettingsTabs === "object" && ui.SettingsTabs !== null,
   /** Luna asks before a logout from the profile menu (TidaLuna 1.20.5+, Inrixia/TidaLuna#212) */
   coreLogoutConfirm: lunaUiIntercepts("session/LOGOUT"),
-  /** @luna/ui MuiTheme API (TidaLuna 1.22.0+): plugins extend Luna's MUI theme, Luna setting components are themeable */
+  /** @luna/ui MuiTheme API (TidaLuna 1.21.9+): plugins extend Luna's MUI theme, Luna setting components are themeable */
   themeOverrides: typeof (ui.MuiTheme as { override?: unknown } | undefined)?.override === "function",
 } as const;
 
