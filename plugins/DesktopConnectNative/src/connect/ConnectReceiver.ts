@@ -23,7 +23,12 @@ export type PlayerCommand =
 	| { type: "release" }
 	// A phone resumed the session, the player follows the receiver again
 	// (it loads the phone's media again, paused where it was, when the desktop played something else meanwhile)
-	| { type: "attach"; mediaId: string; mediaType: number; positionMs: number };
+	| { type: "attach"; mediaId: string; mediaType: number; positionMs: number }
+	// The desktop plays its own media: the player stops following the receiver and reports what the desktop plays
+	// (desktopMedia, state, progress), the phone's play, pause, seek, next and previous go to TIDAL's own controls
+	| { type: "mirror" }
+	| { type: "next" }
+	| { type: "previous" };
 
 export type PlayerState = "IDLE" | "BUFFERING" | "PAUSED" | "PLAYING";
 // Heard from the player
@@ -41,8 +46,13 @@ export type PlayerEvent =
 	| { type: "play" }
 	// The desktop user played something of their own (another album or track): the phone's media stopped, the player is let go
 	| { type: "takenOver" }
+	// While mirroring: the media the desktop plays now. elementId: its place in TIDAL's queue (the same track twice is two)
+	| { type: "desktopMedia"; elementId: string; mediaId: string; mediaType: number; positionMs: number; metadata: DesktopMetadata }
 	// The desktop's volume (0..1) and mute, also after the phone set them: the phone's volume slider goes from it
 	| { type: "volume"; level: number; mute: boolean };
+
+// As the phone's SDK takes a media's metadata: a title is required, artists are names, duration in ms (left out when not known)
+export type DesktopMetadata = { title: string; albumTitle?: string; artists?: string[]; duration?: number };
 
 type Json = Record<string, any>;
 
@@ -154,6 +164,9 @@ export class ConnectReceiver {
 	private includesHead = true;
 	private includesTail = true;
 	private media?: MediaInfo;
+	// The desktop took the player for its own media: the phone is shown what the desktop plays (media is that, not the queue's),
+	// and its controls go to the desktop's. A load of the phone's (or its next with the queue) takes the player back
+	private mirroring = false;
 
 	// What the player reported last
 	private playerState: PlayerState = "IDLE";
@@ -395,6 +408,20 @@ export class ConnectReceiver {
 	// Answers 0 when done, 1002 when there is no queue for it
 	private async onSessionCommand(message: Json): Promise<number> {
 		const toPlayer = this.options.toPlayer;
+		if (this.mirroring) {
+			switch (message.command) {
+				// The desktop's own next and previous (its queue, not the phone's)
+				case "next":
+				case "previous":
+					toPlayer({ type: message.command });
+					return 0;
+				// The desktop's media is not let go: it pauses, the phone keeps showing it
+				case "stop":
+					if (this.media !== undefined) toPlayer({ type: "pause" });
+					return 0;
+			}
+			// Play, pause and seek go to the player as they are, a load of the phone's takes it back (setMedia)
+		}
 		switch (message.command) {
 			case "play":
 				this.play();
@@ -518,7 +545,9 @@ export class ConnectReceiver {
 		this.send(socket, { command: "notifySessionResumed", sessionId: session.id });
 		if (session.suspended) {
 			session.suspended = false;
-			if (this.media !== undefined) {
+			// The desktop's own media: the player reports what it plays now (maybe something else by then)
+			if (this.mirroring) this.options.toPlayer({ type: "mirror" });
+			else if (this.media !== undefined) {
 				// What the player does now is not known, it may load the phone's media again (it tells once it knows)
 				if (!this.finished) this.playerState = "BUFFERING";
 				this.options.toPlayer({ type: "attach", mediaId: this.media.mediaId, mediaType: this.media.mediaType, positionMs: this.positionMs });
@@ -544,6 +573,7 @@ export class ConnectReceiver {
 
 	private clearQueue() {
 		this.queueServer = this.queueInfo = this.media = undefined;
+		this.mirroring = false;
 		this.clearItems();
 		this.playerState = "IDLE";
 		this.positionMs = 0;
@@ -944,11 +974,14 @@ export class ConnectReceiver {
 	// #region Player
 	private setMedia(media: MediaInfo, autoplay = true, position?: unknown) {
 		const positionMs = typeof position === "number" && Number.isFinite(position) && position > 0 ? position : 0;
+		// The player follows the phone again (the load stops its mirroring)
+		this.mirroring = false;
 		this.media = media;
 		this.autoplay = autoplay;
 		this.positionMs = positionMs;
 		this.finished = false;
-		this.log("media", media.mediaId, media.itemId);
+		// With its metadata: the phone's format (its images) is not documented
+		this.log("media", media.mediaId, media.itemId, JSON.stringify(media.metadata ?? null));
 		this.toSession(this.mediaChanged(media));
 		this.setPlayerState("BUFFERING");
 		this.options.toPlayer({ type: "load", mediaId: media.mediaId, mediaType: media.mediaType, autoplay, positionMs });
@@ -992,6 +1025,8 @@ export class ConnectReceiver {
 	}
 	private async handlePlayerEvent(event: PlayerEvent) {
 		if (this.session === undefined || this.session.suspended) return;
+		// TIDAL's own queue goes on by itself while mirroring, a late report of the phone's media does not step the phone's
+		if (this.mirroring && ["ended", "error", "next", "previous", "play", "takenOver"].includes(event.type)) return;
 		switch (event.type) {
 			case "state":
 				if (event.state === "PLAYING") this.failedInARow = 0;
@@ -1030,13 +1065,23 @@ export class ConnectReceiver {
 			case "play":
 				return this.play();
 			case "takenOver":
-				// Like the phone's stop, the queue stays for the phone's next or a new load (which takes the player again)
+				// The phone is shown what the desktop plays and controls it, the queue stays for a load of the phone's (which takes the player back)
 				this.log("the desktop played its own media");
 				this.media = undefined;
-				this.setPlayerState("IDLE");
-				this.finished = true;
-				this.options.toPlayer({ type: "release" });
+				this.mirroring = true;
+				this.finished = false;
+				this.options.toPlayer({ type: "mirror" });
 				return;
+			case "desktopMedia": {
+				// A late one after the phone's load took the player back
+				if (!this.mirroring) return;
+				const { elementId, mediaId, mediaType, positionMs, metadata } = event;
+				this.media = { itemId: `desktop:${elementId}`, mediaId, mediaType, metadata };
+				if (Number.isFinite(positionMs)) this.positionMs = positionMs;
+				this.log("desktop media", mediaId);
+				this.toSession(this.mediaChanged(this.media));
+				return this.toSession(this.playerStatus());
+			}
 		}
 	}
 

@@ -46,11 +46,14 @@ const currentElement = () => PlayState.playQueue.elements[PlayState.playQueue.cu
 export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 	// While the phone controls the player
 	const sessionUnloads = new Set<LunaUnload>();
+	// While the desktop plays its own media in the phone's session: the phone is told what it plays
+	const mirrorUnloads = new Set<LunaUnload>();
 	let unloaded = false;
 	// Registered before the start: an unload while it starts stops it once started (the native side runs them in order)
 	unloads.add(() => {
 		unloaded = true;
 		unloadSet(sessionUnloads);
+		unloadSet(mirrorUnloads);
 		stopReceiver().catch(trace.err.withContext("stop receiver"));
 	});
 	const { firstPort, deviceName, allowedAddresses, allowAnyAddress } = settings;
@@ -118,11 +121,41 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 	const setRepeatMode = (repeatMode: redux.RepeatMode) => redux.actions["playQueue/SET_REPEAT_MODE"](repeatMode);
 
 	const run = async (command: PlayerCommand) => {
+		// While the desktop plays its own media the phone's controls are TIDAL's own buttons
+		if (mirrorUnloads.size !== 0) {
+			switch (command.type) {
+				case "play":
+					return PlayState.play();
+				case "pause":
+				case "stop":
+					return PlayState.pause();
+				case "seek":
+					PlayState.seek(command.positionMs / 1000);
+					return playerEvent({ type: "progress", positionMs: command.positionMs, seeked: true });
+				case "next":
+					return redux.actions["playbackControls/SKIP_NEXT"]();
+				case "previous":
+					return redux.actions["playbackControls/SKIP_PREVIOUS"]();
+				case "mirror":
+					return reportDesktop();
+				// The phone's media again, or the session let go
+				case "load":
+				case "attach":
+				case "release":
+					unloadSet(mirrorUnloads);
+			}
+		}
 		switch (command.type) {
 			case "load":
 				return load(command.mediaId, command.mediaType, command.autoplay, false, command.positionMs / 1000);
 			case "play":
 				return play();
+			case "mirror":
+				return mirror();
+			// Only while mirroring
+			case "next":
+			case "previous":
+				return;
 			case "stop":
 				// The phone let go of its media: the desktop's seek and play of it are TIDAL's own, also once it ended again
 				routedUid = ended = current = undefined;
@@ -459,6 +492,114 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 			return true;
 		});
 	};
+
+	// #region Mirroring
+	// The desktop played its own media while the phone is connected: the player is TIDAL's own again (its queue, next, end and repeat),
+	// the phone is told what it plays, how far and whether it plays
+	const mirrorStates: Partial<Record<redux.PlaybackState, PlayerState>> = {
+		IDLE: "IDLE",
+		NOT_PLAYING: "PAUSED",
+		PLAYING: "PLAYING",
+		STALLED: "BUFFERING",
+	};
+	// TIDAL passes through idle and paused when it moves to another track: told only when it stays so a moment, playing at once
+	let stateTimeout: number | undefined;
+	const reportDesktopState = (state: redux.PlaybackState, now = false) => {
+		const playerState = mirrorStates[state];
+		if (playerState === undefined) return;
+		clearTimeout(stateTimeout);
+		const report = () => playerEvent({ type: "state", state: playerState });
+		if (now || playerState === "PLAYING") report();
+		else stateTimeout = window.setTimeout(report, 600);
+	};
+	// TIDAL's state (PlayState.currentTime reads the first player, a track's after a video), moved on by the time since while playing
+	const desktopTime = () => {
+		const { latestCurrentTime, latestCurrentTimeSyncTimestamp, playbackState } = PlayState.playbackControls;
+		const elapsedS = (Date.now() - latestCurrentTimeSyncTimestamp) / 1000;
+		return latestCurrentTime + (playbackState === "PLAYING" && elapsedS > 0 && elapsedS < 3600 ? elapsedS : 0);
+	};
+	// Where the desktop's media is, told with it when it changes (the receiver's last position is the previous media's)
+	let desktopPositionS = 0;
+	const reportDesktopTime = (seconds: number, seeked = false) => {
+		if (!Number.isFinite(seconds) || seconds < 0) return;
+		desktopPositionS = seconds;
+		playerEvent({ type: "progress", positionMs: seconds * 1000, seeked });
+	};
+	// Each media looked up in turn, an older lookup that ends late is not told
+	let mediaLookups = 0;
+	const reportDesktopMedia = async ({ productId, productType, referenceId }: { productId?: redux.ItemId | null; productType?: string; referenceId?: string }) => {
+		if (productId === undefined || productId === null) return;
+		const lookup = ++mediaLookups;
+		const contentType = productType === "video" ? "video" : "track";
+		const mediaItem = await withTimeout(
+			MediaItem.fromId(productId, contentType).catch((err) => void trace.err.withContext("desktop media")(err)),
+			loadTimeoutMs,
+		);
+		if (lookup !== mediaLookups || mirrorUnloads.size === 0) return;
+		const tidalItem = mediaItem?.tidalItem as (redux.Track & { version?: string | null }) | undefined;
+		// The phone's SDK refuses an empty title, album title or artist name and a duration of 0
+		const name = tidalItem?.title || "Unknown";
+		const title = tidalItem?.version ? `${name} (${tidalItem.version})` : name;
+		const artists = (tidalItem?.artists ?? []).map((artist) => artist?.name).filter((artist): artist is string => typeof artist === "string" && artist !== "");
+		const albumTitle = tidalItem?.album?.title;
+		const durationS = tidalItem?.duration ?? PlayState.playbackContext?.actualDuration;
+		playerEvent({
+			type: "desktopMedia",
+			elementId: String(referenceId ?? productId),
+			mediaId: String(productId),
+			mediaType: contentType === "video" ? 1 : 0,
+			positionMs: desktopPositionS * 1000,
+			metadata: {
+				title,
+				...(albumTitle ? { albumTitle } : {}),
+				...(artists.length !== 0 ? { artists } : {}),
+				...(typeof durationS === "number" && durationS > 0 ? { duration: Math.round(durationS * 1000) } : {}),
+			},
+		});
+	};
+	// What the desktop plays now, for the phone that just came (or came back)
+	const reportDesktop = () => {
+		const { mediaProduct, playbackState } = PlayState.playbackControls;
+		playingVideo = mediaProduct?.productType === "video";
+		if (mediaProduct !== undefined) void reportDesktopMedia(mediaProduct);
+		reportDesktopTime(desktopTime(), true);
+		reportDesktopState(playbackState, true);
+	};
+	const mirror = () => {
+		// The phone's media is let go (TIDAL's own repeat mode back)
+		pauseWhenPlaying = false;
+		unloadSet(sessionUnloads);
+		redux.intercept("playbackControls/MEDIA_PRODUCT_TRANSITION", mirrorUnloads, ({ mediaProduct }) => {
+			playingVideo = mediaProduct.productType === "video";
+			// It starts from the beginning, its player signals tell otherwise
+			desktopPositionS = 0;
+			void reportDesktopMedia(mediaProduct);
+		});
+		redux.intercept("playbackControls/SET_PLAYBACK_STATE", mirrorUnloads, (state) => reportDesktopState(state));
+		mirrorUnloads.add(() => clearTimeout(stateTimeout));
+		ipcRenderer.on(mirrorUnloads, "client.playback.playersignal", ({ time }: { time?: number }) => {
+			if (typeof time === "number") reportDesktopTime(time);
+		});
+		redux.intercept("playbackControls/SEEK", mirrorUnloads, (time) => reportDesktopTime(time, true));
+		// Where back and forward moved it, once TIDAL's state has it
+		let seekedTimeout: number | undefined;
+		mirrorUnloads.add(() => clearTimeout(seekedTimeout));
+		for (const action of ["playbackControls/SEEK_BACKWARDS", "playbackControls/SEEK_FORWARDS"] as const)
+			redux.intercept(action, mirrorUnloads, () => {
+				clearTimeout(seekedTimeout);
+				seekedTimeout = window.setTimeout(() => reportDesktopTime(desktopTime(), true), 500);
+			});
+		// No player signal for videos
+		const onVideoTime = ({ target }: Event) => {
+			if (target instanceof HTMLVideoElement && playingVideo) reportDesktopTime(target.currentTime);
+		};
+		document.addEventListener("timeupdate", onVideoTime, true);
+		mirrorUnloads.add(() => document.removeEventListener("timeupdate", onVideoTime, true));
+		// A lookup still running is not told once the phone's media is back
+		mirrorUnloads.add(() => mediaLookups++);
+		reportDesktop();
+	};
+	// #endregion
 
 	return true;
 };
