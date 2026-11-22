@@ -2,6 +2,7 @@
 declare module "electron" {
 	interface WebContents {
 		getURL(): string;
+		isDestroyed(): boolean;
 		send(channel: string, ...args: unknown[]): void;
 	}
 	export const app: { getPath(name: "userData"): string };
