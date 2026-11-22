@@ -1,9 +1,11 @@
 import { type LunaUnload, Tracer, unloadSet } from "@luna/core";
 import { ipcRenderer, MediaItem, PlayState, redux } from "@luna/lib";
 
-import type { DesktopQueueItem, PlayerCommand, PlayerState } from "./connect/ConnectReceiver";
-import { playerEvent, startReceiver, stopReceiver } from "./receiver.native";
-import { allowedAccountIds, applyAccounts, computerAccount, settings } from "./Settings";
+import { ConnectReceiver, type DesktopQueueItem, type PlayerCommand, type PlayerEvent, type PlayerState } from "./connect/ConnectReceiver";
+import type { PhoneEvent } from "./connect/PhoneServer";
+import { live } from "./live";
+import { closePhone, httpRequest, sendToPhone, startReceiver, stopReceiver } from "./receiver.native";
+import { isAllowedAccount, settings } from "./Settings";
 
 const { trace } = Tracer("[DesktopConnectNative]");
 
@@ -11,7 +13,7 @@ const { trace } = Tracer("[DesktopConnectNative]");
 declare const __TIDAL_SERVER_KEY_BASE64__: string;
 
 // Same as in receiver.native.ts
-const receiverChannel = "desktopConnectNative.receiver";
+const phoneChannel = "desktopConnectNative.phone";
 // Loading a video can take over 5s
 const loadTimeoutMs = 10000;
 // The part of TIDAL's queue the phone is given while mirroring: entries before the current one and in all
@@ -44,51 +46,58 @@ const nextAction = <T extends redux.ActionType>(
 };
 const currentElement = () => PlayState.playQueue.elements[PlayState.playQueue.currentIndex];
 
-// The own TIDAL Connect receiver (receiver.native.ts) owns the phone's queue and session,
-// TIDAL's player here plays what it says and reports back. Returns false when it could not start (no key)
+// The running receiver's ear for the player (nothing before it started and after it stopped)
+let playerEvent: (event: PlayerEvent) => void = () => {};
+
+// The own TIDAL Connect receiver (ConnectReceiver, here) owns the phone's queue and session, receiver.native.ts only holds
+// the phones' connections. TIDAL's player here plays what it says and reports back. Returns false when it could not start (no key)
 export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 	// While the phone controls the player
 	const sessionUnloads = new Set<LunaUnload>();
 	// While the desktop plays its own media in the phone's session: the phone is told what it plays
 	const mirrorUnloads = new Set<LunaUnload>();
 	let unloaded = false;
+	// The TIDAL Connect protocol runs here, the native module only passes the phones' messages (PhoneServer)
+	// Commands come in bursts (load, seek, play) and loading is async, so run them one after another.
+	// A phone may send some while the receiver starts: they wait until the player below is set up (run)
+	let playerReady!: () => void;
+	let commands: Promise<unknown> = new Promise<void>((resolve) => (playerReady = resolve));
+	const receiver = new ConnectReceiver({
+		toPlayer: (command: PlayerCommand) => {
+			commands = commands.then(() => (unloaded ? undefined : run(command))).catch(trace.err.withContext(`receiver ${command.type}`));
+		},
+		toPhone: (phoneId, text) => void sendToPhone(phoneId, text).catch(trace.err.withContext("send to phone")),
+		closePhone: (phoneId) => void closePhone(phoneId).catch(trace.err.withContext("close phone")),
+		request: httpRequest,
+		log: (...args) => console.log("[DesktopConnectNative]", ...args),
+		// The phone's TIDAL account must be the one signed in here (or one in the settings)
+		isAllowedAccount,
+	});
+	playerEvent = (event) => receiver.onPlayerEvent(event);
+	live.refusedAccounts = () => receiver.refusedTidalAccounts;
 	// Registered before the start: an unload while it starts stops it once started (the native side runs them in order)
 	unloads.add(() => {
 		unloaded = true;
 		unloadSet(sessionUnloads);
 		unloadSet(mirrorUnloads);
+		receiver.stop();
+		playerEvent = () => {};
+		live.refusedAccounts = () => [];
 		stopReceiver().catch(trace.err.withContext("stop receiver"));
 	});
-	const { firstPort, deviceName, allowedAddresses, allowAnyAddress, anyAccount } = settings;
-	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, {
-		firstPort,
-		deviceName,
-		allowedAddresses,
-		allowAnyAddress,
-		accountIds: allowedAccountIds(),
-		anyAccount,
-	}).catch(trace.err.withContext("start receiver"));
+	// Before the start: the phones' first messages may come at once
+	ipcRenderer.on(unloads, phoneChannel, (event: PhoneEvent) => {
+		if (event.type === "open") receiver.onPhoneOpen(event.id);
+		else if (event.type === "message") receiver.onPhoneMessage(event.id, event.text);
+		else receiver.onPhoneClose(event.id);
+	});
+	const { firstPort, deviceName, allowedAddresses, allowAnyAddress } = settings;
+	const started = await startReceiver(__TIDAL_SERVER_KEY_BASE64__, { firstPort, deviceName, allowedAddresses, allowAnyAddress }).catch(
+		trace.err.withContext("start receiver"),
+	);
 	if (started === undefined) return false;
 	if (unloaded) return true;
 	trace.log(`TIDAL Connect receiver on port ${started.port}`);
-
-	// Commands come in bursts (load, seek, play) and loading is async, so run them one after another
-	let commands: Promise<unknown> = Promise.resolve();
-	ipcRenderer.on(unloads, receiverChannel, (command: PlayerCommand) => {
-		commands = commands.then(() => (unloaded ? undefined : run(command))).catch(trace.err.withContext(`receiver ${command.type}`));
-	});
-
-	// The phone's TIDAL account must be the one signed in here (or one in the settings): it follows a sign-in or sign-out
-	let account = computerAccount();
-	unloads.add(
-		redux.store.subscribe(() => {
-			if (computerAccount() === account) return;
-			account = computerAccount();
-			applyAccounts().catch(trace.err.withContext("allowed accounts"));
-		}),
-	);
-	// Signed in while the receiver started
-	applyAccounts().catch(trace.err.withContext("allowed accounts"));
 
 	// The phone's volume slider goes from the desktop's volume: told when it changes, by the desktop user or the phone
 	let reportedVolume: string | undefined;
@@ -641,5 +650,7 @@ export const startOwnReceiver = async (unloads: Set<LunaUnload>) => {
 	};
 	// #endregion
 
+	// The commands that came while the receiver started run now
+	playerReady();
 	return true;
 };

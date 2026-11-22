@@ -3,7 +3,8 @@ import { redux } from "@luna/lib";
 import { LunaNumberSetting, LunaSettings, LunaSwitchSetting, LunaTextSetting } from "@luna/ui";
 import React from "react";
 
-import { refusedAccounts, setAllowedAccounts, setAllowedAddresses, setDeviceName } from "./receiver.native";
+import { live } from "./live";
+import { setAllowedAddresses, setDeviceName } from "./receiver.native";
 
 export const settings = await ReactiveStore.getPluginStorage("DesktopConnectNative", {
 	// Empty: "TidaLuna: <computer name>"
@@ -22,9 +23,16 @@ export const computerAccount = () => {
 	const userId = redux.store.getState().session?.userId;
 	return userId ? String(userId) : "";
 };
-export const allowedAccountIds = () => [computerAccount(), ...settings.otherAccounts.split(/[\s,;]+/)].filter((id) => /^\d+$/.test(id));
-// Phones that connect from now on are checked against these
-export const applyAccounts = () => setAllowedAccounts(allowedAccountIds(), settings.anyAccount);
+// User ids are numbers: "0123" is 123
+const accountKey = (id: string) => id.trim().replace(/^0+(?=\d)/, "");
+// Whether a phone of this TIDAL account may use the receiver: the account signed in here (also after a sign-in or out)
+// and the ones in the settings, read when the phone connects
+export const isAllowedAccount = (userId: string) => {
+	if (settings.anyAccount) return true;
+	const allowed = [computerAccount(), ...settings.otherAccounts.split(/[\s,;]+/)].filter((id) => /^\d+$/.test(id)).map(accountKey);
+	const key = accountKey(userId);
+	return key !== "0" && allowed.includes(key);
+};
 
 // Applied once typing stops, not on every key
 const applyAfterMs = 1000;
@@ -37,7 +45,6 @@ const debounced = () => {
 };
 const afterNameTyped = debounced();
 const afterAddressesTyped = debounced();
-const afterAccountsTyped = debounced();
 
 const allowedAddressesDesc =
 	"Who else may connect besides the home network, this computer and Tailscale: addresses or ranges, like 203.0.113.5, 198.51.100.0/24. " +
@@ -52,7 +59,7 @@ export const Settings = () => {
 	const [otherAccounts, setOtherAccounts] = React.useState(settings.otherAccounts);
 	const [anyAccount, setAnyAccount] = React.useState(settings.anyAccount);
 	const [refused, setRefused] = React.useState<string[]>([]);
-	React.useEffect(() => void refusedAccounts().then(setRefused).catch(console.error), []);
+	React.useEffect(() => setRefused(live.refusedAccounts()), []);
 	const applyAddresses = () =>
 		setAllowedAddresses(settings.allowedAddresses, settings.allowAnyAddress).then(setInvalid).catch(console.error);
 	React.useEffect(() => void applyAddresses(), []);
@@ -97,12 +104,11 @@ export const Settings = () => {
 				title="Other TIDAL accounts"
 				desc={
 					`Only phones signed in to this computer's TIDAL account (${computerAccount() || "none signed in"}) can use the receiver, and to the accounts here: TIDAL user ids, like 123456, 234567.` +
-					(refused.length === 0 ? "" : ` Refused since TIDAL started: ${refused.join(", ")}`)
+					(refused.length === 0 ? "" : ` Refused since the receiver started: ${refused.join(", ")}`)
 				}
 				value={otherAccounts}
 				onChange={(e: React.ChangeEvent<HTMLInputElement>) => {
 					setOtherAccounts((settings.otherAccounts = e.target.value));
-					afterAccountsTyped(() => applyAccounts().catch(console.error));
 				}}
 			/>
 			<LunaSwitchSetting
@@ -111,7 +117,6 @@ export const Settings = () => {
 				checked={anyAccount}
 				onChange={(_: unknown, checked: boolean) => {
 					setAnyAccount((settings.anyAccount = checked));
-					applyAccounts().catch(console.error);
 				}}
 			/>
 		</LunaSettings>

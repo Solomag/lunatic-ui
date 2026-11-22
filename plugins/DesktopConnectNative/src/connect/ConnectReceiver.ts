@@ -1,12 +1,11 @@
-import { createServer, type Server } from "https";
-import { createServer as createTcpServer, type AddressInfo, type Server as TcpServer } from "net";
-import { randomUUID } from "crypto";
-import { WebSocketServer, type WebSocket } from "ws";
+import { fetchRequest, isTidalUrl, type HttpInit, type HttpRequest } from "./http";
 
 // The TIDAL Connect receiver: the protocol TIDAL's own tidal_connect_application speaks to the phone,
 // as worked out by Brskt for Lunar's own implementation (https://github.com/Brskt/TidaLuna/tree/lunar-cef, src/connect).
 // Written anew from it, the protocol is the same
-// a TLS WebSocket with JSON messages. The phone only trusts TIDAL's CA, so the server needs TIDAL's desktop certificate and its key.
+// a TLS Phone with JSON messages. The phone only trusts TIDAL's CA, so the server needs TIDAL's desktop certificate and its key.
+// The connections are PhoneServer's (the native module), the receiver runs in the renderer and only sees each phone's
+// messages: a plugin update that changes the protocol does not change the native module (Luna asks for its permissions again then).
 // Playback itself is the renderer's (TIDAL's player), the receiver tells it what to load and play and hears back what it does.
 
 // Sent to the player (the renderer)
@@ -84,22 +83,19 @@ type MediaInfo = {
 	streamType?: string;
 };
 
+// A connected phone, as PhoneServer tells of it (onPhone)
+type Phone = { readonly id: string; open: boolean };
+
 export type ReceiverOptions = {
-	cert: string | Buffer;
-	key: string | Buffer;
-	// The port the mDNS record gives the phone, 0 picks a free port (tests)
-	port: number;
-	// Listens on these addresses only (setHosts follows network changes), on all of them when not given
-	hosts?: string[];
 	toPlayer: (command: PlayerCommand) => void;
+	// The phone's connection (PhoneServer's send and close)
+	toPhone: (phoneId: string, text: string) => void;
+	closePhone: (phoneId: string) => void;
+	// HTTP to TIDAL's servers (fetch when not given)
+	request?: HttpRequest;
 	log?: (...args: unknown[]) => void;
 	// Tests point the receiver at a local queue server
 	isTrustedUrl?: (url: string) => boolean;
-	// The mDNS record the receiver is announced with, answered at serviceInfoPath
-	serviceInfo?: () => ServiceInfo | undefined;
-	// Whether a connection from the address is let in (the WebSocket and serviceInfoPath), any when not given (tests).
-	// Checked before TLS, others are dropped at once
-	isAllowedAddress?: (address: string | undefined) => boolean;
 	// Whether a phone signed in to this TIDAL account (user id) may use the receiver, any phone when not given (tests).
 	// The account is asked of TIDAL with the token the phone loads its first queue with: until then the phone's session
 	// only waits, the session held (another phone's) and the player are left alone
@@ -113,13 +109,8 @@ export const tidalAccountUrl = "https://api.tidal.com/v1/sessions";
 // Short: the check runs in turn with the commands, the held session waits for it
 const accountTimeoutMs = 4_000;
 
-export const serviceInfoPath = "/tidalconnect/service";
-export type ServiceInfo = { name: string; type: string; port: number; txt: Record<string, string> };
-
-const pingIntervalMs = 15_000;
 // After the phone set the volume its slider is left alone this long: the player's late reports of the drag are not sent back
 const phoneVolumeQuietMs = 1_000;
-const pingTimeoutMs = 31_000;
 const progressIntervalMs = 1_000;
 const httpTimeoutMs = 30_000;
 // Repeat all walks the queue to its other end in windows this long (the server may send shorter ones),
@@ -133,16 +124,7 @@ const maxFailedInARow = 10;
 // While mirroring, the desktop's media is told again this long after the phone was given the cloud queue (it moves to the item once it read it)
 const mirrorResendMs = 1_500;
 
-// The phone hands over its own tokens, they must only ever go to TIDAL's servers
-export const isTidalUrl = (url: string) => {
-	try {
-		const { protocol, hostname } = new URL(url);
-		if (protocol !== "https:") return false;
-		return ["tidal.com", "tidalhifi.com"].some((domain) => hostname === domain || hostname.endsWith(`.${domain}`));
-	} catch {
-		return false;
-	}
-};
+export { isTidalUrl };
 
 // The phone's window sizes, the default for anything else
 const windowSizeOf = (size: unknown) => {
@@ -153,23 +135,15 @@ const windowSizeOf = (size: unknown) => {
 const repeatModeOf = (mode: unknown): RepeatMode => (mode === "ONE" || mode === "ALL" ? mode : "NONE");
 
 export class ConnectReceiver {
-	// Not listening itself, the TCP listeners hand it their connections
-	private readonly server: Server;
-	// By address, "" for all addresses
-	private readonly listeners = new Map<string, TcpServer>();
-	// Addresses it could not listen on, logged once
-	private readonly failedHosts = new Set<string>();
-	// Addresses a connection was refused from, logged once
-	private readonly refusedAddresses = new Set<string>();
-	private readonly wss: WebSocketServer;
-	private readonly sockets = new Map<WebSocket, { alive: number }>();
-	private readonly pingTimer: NodeJS.Timeout;
+	// The phones connected, by PhoneServer's id
+	private readonly phones = new Map<string, Phone>();
 	private readonly log: (...args: unknown[]) => void;
 	private readonly isTrustedUrl: (url: string) => boolean;
+	private readonly request: HttpRequest;
 
-	private session?: { id: string; members: Set<WebSocket>; suspended: boolean };
+	private session?: { id: string; members: Set<Phone>; suspended: boolean };
 	// Phones told their session started whose TIDAL account is not checked yet (isAllowedAccount), with the queue server they gave
-	private readonly waiting = new Map<WebSocket, { id: string; servers?: ServerInfo }>();
+	private readonly waiting = new Map<Phone, { id: string; servers?: ServerInfo }>();
 	// TIDAL accounts a phone was refused for, logged once
 	private readonly refusedAccounts = new Set<string>();
 
@@ -195,7 +169,7 @@ export class ConnectReceiver {
 	private mirrorQueueNext?: DesktopQueueItem[];
 	// Counted when mirroring starts or ends: a cloud queue made for an earlier one is not given to the phone
 	private mirrorGeneration = 0;
-	private mirrorResendTimer?: NodeJS.Timeout;
+	private mirrorResendTimer?: ReturnType<typeof setTimeout>;
 	// The desktop's media's entry in its queue
 	private mirrorElementId?: string;
 
@@ -219,149 +193,58 @@ export class ConnectReceiver {
 		return run;
 	}
 
-	private constructor(private readonly options: ReceiverOptions) {
+	constructor(private readonly options: ReceiverOptions) {
 		this.log = options.log ?? (() => {});
 		this.isTrustedUrl = options.isTrustedUrl ?? isTidalUrl;
-		this.server = createServer({ cert: options.cert, key: options.key }, (request, response) => {
-			// Where mDNS does not reach (a phone over Tailscale on mobile data), a module on the phone asks for the record here
-			const service = request.method === "GET" && request.url === serviceInfoPath ? options.serviceInfo?.() : undefined;
-			if (service === undefined) return void response.writeHead(404).end();
-			response.writeHead(200, { "Content-Type": "application/json" }).end(JSON.stringify(service));
-		});
-		// The phone's messages are small JSON, ws would accept 100 MiB
-		this.wss = new WebSocketServer({ server: this.server, maxPayload: 1024 * 1024 });
-		// ws forwards the server's errors (port in use) and would throw them without a listener
-		this.wss.on("error", (err) => this.log("server error", err));
-		this.wss.on("connection", (socket) => this.onConnection(socket));
-		this.pingTimer = setInterval(() => this.pingAll(), pingIntervalMs);
+		this.request = options.request ?? fetchRequest;
 	}
 
-	// Without hosts it rejects when the port is taken, with hosts it starts on the ones it can listen on (maybe none)
-	static async start(options: ReceiverOptions) {
-		const receiver = new ConnectReceiver(options);
-		if (options.hosts !== undefined) {
-			await receiver.setHosts(options.hosts);
-			return receiver;
-		}
-		await receiver.listen("").catch((err) => {
-			clearInterval(receiver.pingTimer);
-			throw err;
-		});
-		return receiver;
-	}
-
-	// Listens on the addresses the computer has now: new ones are added, gone ones closed
-	setHosts(hosts: string[]) {
-		// One change at a time, a second listen on the same address would fail
-		const run = this.hostsChange.then(() => this.applyHosts(hosts));
-		this.hostsChange = run;
-		return run;
-	}
-	private hostsChange: Promise<void> = Promise.resolve();
 	private stopped = false;
-	private async applyHosts(hosts: string[]) {
-		if (this.stopped) return;
-		for (const [host, listener] of this.listeners) {
-			if (hosts.includes(host)) continue;
-			this.listeners.delete(host);
-			listener.close();
-			this.log("Stopped listening on", host);
-		}
-		for (const host of hosts) {
-			if (this.stopped) return;
-			if (this.listeners.has(host)) continue;
-			await this.listen(host).then(
-				() => {
-					this.failedHosts.delete(host);
-					this.log("Listening on", host, "port", this.port);
-				},
-				(err) => {
-					if (this.failedHosts.has(host)) return;
-					this.failedHosts.add(host);
-					this.log("Cannot listen on", host, "port", this.options.port, err.code ?? err);
-				},
-			);
-		}
-	}
-
-	get listening() {
-		return this.listeners.size !== 0;
-	}
-
-	private listen(host: string) {
-		const listener = createTcpServer((socket) => {
-			const { remoteAddress } = socket;
-			if (this.options.isAllowedAddress?.(remoteAddress) === false) {
-				socket.destroy();
-				const address = remoteAddress ?? "unknown address";
-				if (this.refusedAddresses.has(address)) return;
-				this.refusedAddresses.add(address);
-				return this.log("Refused a connection from", address, "(not in the allowed addresses)");
-			}
-			this.server.emit("connection", socket);
-		});
-		return new Promise<void>((resolve, reject) => {
-			listener.once("error", reject);
-			listener.listen(this.options.port, host === "" ? undefined : host, () => {
-				listener.off("error", reject);
-				listener.on("error", (err) => this.log("listener error", err));
-				this.listeners.set(host, listener);
-				resolve();
-			});
-		});
-	}
-
-	get port() {
-		const listener = this.listeners.values().next().value;
-		return listener === undefined ? this.options.port : (listener.address() as AddressInfo).port;
-	}
-
-	async stop() {
+	stop() {
 		this.stopped = true;
-		clearInterval(this.pingTimer);
 		clearTimeout(this.volumeTimer);
+		clearTimeout(this.mirrorResendTimer);
 		this.waiting.clear();
 		this.endSession(false);
-		for (const socket of this.sockets.keys()) socket.terminate();
-		this.wss.close();
-		await this.hostsChange;
-		const listeners = [...this.listeners.values()];
-		this.listeners.clear();
-		await Promise.all(listeners.map((listener) => new Promise<void>((resolve) => listener.close(() => resolve()))));
+		for (const phone of this.phones.values()) this.closePhone(phone);
+		this.phones.clear();
 	}
 
-	// #region Sockets
-	private onConnection(socket: WebSocket) {
-		this.sockets.set(socket, { alive: Date.now() });
-		this.log("phone connected", this.sockets.size);
-		socket.on("pong", () => {
-			const state = this.sockets.get(socket);
-			if (state) state.alive = Date.now();
-		});
-		socket.on("message", (data, isBinary) => {
-			if (isBinary) return;
-			let message: Json;
-			try {
-				message = JSON.parse(data.toString());
-			} catch {
-				return this.log("invalid message", data.toString());
-			}
-			this.serial(() => this.onMessage(socket, message), `command ${message?.command}`);
-		});
-		socket.on("close", () => this.onClose(socket));
-		socket.on("error", (err) => this.log("socket error", err));
+	// #region Phones
+	// PhoneServer's events, in the order they happened
+	onPhoneOpen(id: string) {
+		if (this.stopped) return this.options.closePhone(id);
+		this.phones.set(id, { id, open: true });
 	}
 
-	private pingAll() {
-		const now = Date.now();
-		for (const [socket, state] of this.sockets) {
-			if (now - state.alive > pingTimeoutMs) socket.terminate();
-			else socket.ping();
+	onPhoneMessage(id: string, text: string) {
+		const phone = this.phones.get(id);
+		if (phone === undefined) return;
+		let message: Json;
+		try {
+			message = JSON.parse(text);
+		} catch {
+			return this.log("invalid message", text);
 		}
+		if (message === null || typeof message !== "object") return this.log("invalid message", text);
+		this.serial(() => this.onMessage(phone, message), `command ${message.command}`);
 	}
 
-	private onClose(socket: WebSocket) {
-		this.sockets.delete(socket);
+	onPhoneClose(id: string) {
+		const phone = this.phones.get(id);
+		if (phone === undefined) return;
+		this.phones.delete(id);
+		phone.open = false;
+		this.onClose(phone);
+	}
+
+	private closePhone(phone: Phone) {
+		if (!phone.open) return;
+		phone.open = false;
+		this.options.closePhone(phone.id);
+	}
+
+	private onClose(socket: Phone) {
 		this.waiting.delete(socket);
 		const session = this.session;
 		if (session === undefined || !session.members.delete(socket)) return;
@@ -373,8 +256,15 @@ export class ConnectReceiver {
 		}
 	}
 
-	private send(socket: WebSocket, message: Json) {
-		if (socket.readyState === socket.OPEN) socket.send(JSON.stringify(message));
+	private send(socket: Phone, message: Json) {
+		if (socket.open) this.options.toPhone(socket.id, JSON.stringify(message));
+	}
+
+	// HTTP to TIDAL's servers, JSON back ({} for an empty answer)
+	private async requestJson(url: string, init: HttpInit) {
+		const { status, text } = await this.request(url, init);
+		const ok = status >= 200 && status < 300;
+		return { status, ok, json: (): Json => (text ? JSON.parse(text) : {}) };
 	}
 
 	private toSession(message: Json) {
@@ -392,7 +282,7 @@ export class ConnectReceiver {
 		this.told = { level, mute };
 		return { command: "notifyDeviceStatusChanged", volume: { level, mute } };
 	}
-	private sendVolume(socket: WebSocket) {
+	private sendVolume(socket: Phone) {
 		if (this.volume !== undefined) this.send(socket, this.deviceStatus());
 	}
 	private setVolume(level: number, mute: boolean) {
@@ -419,7 +309,7 @@ export class ConnectReceiver {
 	// #endregion
 
 	// #region Commands
-	private async onMessage(socket: WebSocket, message: Json) {
+	private async onMessage(socket: Phone, message: Json) {
 		const { command, requestId } = message;
 		this.log("<-", command, requestId ?? "");
 		switch (command) {
@@ -567,8 +457,8 @@ export class ConnectReceiver {
 	// #endregion
 
 	// #region Session
-	private startSession(socket: WebSocket) {
-		const id = randomUUID();
+	private startSession(socket: Phone) {
+		const id = crypto.randomUUID();
 		// A phone that started before and still waits starts again
 		this.waiting.delete(socket);
 		// A phone of the session held was checked already
@@ -585,7 +475,7 @@ export class ConnectReceiver {
 
 	// A waiting phone's command: its first queue load (with its token) asks TIDAL for its account. True when the session
 	// opened (the command then runs in it), otherwise the result for the phone
-	private async checkAccount(socket: WebSocket, waiting: { id: string; servers?: ServerInfo }, message: Json): Promise<true | number> {
+	private async checkAccount(socket: Phone, waiting: { id: string; servers?: ServerInfo }, message: Json): Promise<true | number> {
 		if (message.queueServerInfo) waiting.servers = message.queueServerInfo;
 		if (message.command === "updateServerInfo") return 0;
 		if (message.command !== "loadCloudQueue") {
@@ -614,7 +504,7 @@ export class ConnectReceiver {
 			this.log("Refused a phone of TIDAL account", userId, "(not an allowed account)");
 		}
 		this.send(socket, { command: "notifySessionEnded", sessionId: waiting.id, suspended: false });
-		socket.close();
+		this.closePhone(socket);
 		return 1002;
 	}
 
@@ -624,9 +514,9 @@ export class ConnectReceiver {
 		if (auth === undefined) return undefined;
 		const url = this.options.accountUrl ?? tidalAccountUrl;
 		if (!this.isTrustedUrl(url)) throw new Error(`Untrusted account url ${url}`);
-		const res = await fetch(url, { headers: { Authorization: auth }, signal: AbortSignal.timeout(accountTimeoutMs) });
+		const res = await this.requestJson(url, { headers: { Authorization: auth }, timeoutMs: accountTimeoutMs });
 		if (!res.ok) throw new Error(`HTTP ${res.status}`);
-		const { userId } = (await res.json()) as Json;
+		const { userId } = res.json();
 		return typeof userId === "number" || (typeof userId === "string" && userId !== "") ? String(userId) : undefined;
 	}
 
@@ -635,7 +525,7 @@ export class ConnectReceiver {
 		return [...this.refusedAccounts];
 	}
 
-	private openSession(socket: WebSocket, id: string) {
+	private openSession(socket: Phone, id: string) {
 		// A new session replaces the one held, its other phones are told it is over
 		const old = this.session;
 		if (old !== undefined) {
@@ -647,7 +537,7 @@ export class ConnectReceiver {
 		this.log("session started", id);
 	}
 
-	private resumeSession(socket: WebSocket, sessionId: unknown) {
+	private resumeSession(socket: Phone, sessionId: unknown) {
 		const session = this.session;
 		if (session === undefined) return this.send(socket, { command: "notifySessionError", requestedCommand: "resumeSession", error: "No Session" });
 		if (session.id !== sessionId)
@@ -1019,16 +909,15 @@ export class ConnectReceiver {
 		const auth = this.authHeader(server);
 		if (auth) headers.Authorization = auth;
 		if (body !== undefined) headers["Content-Type"] = "application/json";
-		const res = await fetch(url, {
+		const res = await this.requestJson(url, {
 			method,
 			headers,
 			body: body === undefined ? undefined : JSON.stringify(body),
-			signal: AbortSignal.timeout(timeoutMs),
+			timeoutMs,
 		});
 		if (res.status === 401 && !retried && (await this.refreshToken())) return this.queueRequest(method, url, { body, timeoutMs, retried: true });
 		if (!res.ok) throw Object.assign(new Error(`Queue server HTTP ${res.status}`), { status: res.status });
-		const text = await res.text();
-		return text ? JSON.parse(text) : {};
+		return res.json();
 	}
 
 	private queueServerError(err: unknown) {
@@ -1060,14 +949,17 @@ export class ConnectReceiver {
 			form.set("scope", oauth.formParameters.scope);
 		}
 		try {
-			const res = await fetch(oauth.serverUrl, {
+			const res = await this.requestJson(oauth.serverUrl, {
 				method: "POST",
-				headers: { ...(oauth.authInfo.headerAuth ? { Authorization: oauth.authInfo.headerAuth } : {}) },
-				body: form,
-				signal: AbortSignal.timeout(httpTimeoutMs),
+				headers: {
+					"Content-Type": "application/x-www-form-urlencoded;charset=UTF-8",
+					...(oauth.authInfo.headerAuth ? { Authorization: oauth.authInfo.headerAuth } : {}),
+				},
+				body: form.toString(),
+				timeoutMs: httpTimeoutMs,
 			});
 			if (!res.ok) throw new Error(`HTTP ${res.status}`);
-			const json = await res.json();
+			const json = res.json();
 			if (typeof json.access_token !== "string") throw new Error("No access_token");
 			params.accessToken = json.access_token;
 			if (typeof json.refresh_token === "string") params.refreshToken = json.refresh_token;
