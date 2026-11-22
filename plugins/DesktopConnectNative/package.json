@@ -1,6 +1,6 @@
 {
 	"name": "@solomag/desktop-connect-native",
-	"version": "1.0.11",
+	"version": "1.0.12",
 	"description": "Remote control the TIDAL Desktop client via TIDAL Connect with its own receiver, no TIDAL binary needed. Protocol based on Brskt's work in Lunar: https://github.com/Brskt/TidaLuna/tree/lunar-cef",
 	"author": {
 		"name": "Solomag"

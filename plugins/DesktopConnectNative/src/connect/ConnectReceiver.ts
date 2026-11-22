@@ -311,6 +311,8 @@ export class ConnectReceiver {
 	// #region Commands
 	private async onMessage(socket: Phone, message: Json) {
 		const { command, requestId } = message;
+		// Let go already (it ended its session, its account was refused): what it sent before it heard is dropped
+		if (!socket.open) return this.log("dropped", command, "(the phone was let go)");
 		this.log("<-", command, requestId ?? "");
 		switch (command) {
 			case "startSession":
@@ -320,11 +322,15 @@ export class ConnectReceiver {
 			case "endSession":
 				if (this.waiting.get(socket)?.id === message.sessionId) {
 					this.waiting.delete(socket);
-					return this.send(socket, { command: "notifySessionEnded", sessionId: message.sessionId, suspended: false });
-				}
-				if (!this.session?.members.has(socket) || message.sessionId !== this.session.id)
-					return this.send(socket, { command: "notifySessionError", requestedCommand: "endSession", error: "Invalid SessionId" });
-				return this.endSession(message.stopCasting === true);
+					this.send(socket, { command: "notifySessionEnded", sessionId: message.sessionId, suspended: false });
+				} else if (!this.session?.members.has(socket) || message.sessionId !== this.session.id) {
+					this.send(socket, { command: "notifySessionError", requestedCommand: "endSession", error: "Invalid SessionId" });
+					// A phone of the session held stays in it
+					if (this.session?.members.has(socket)) return;
+				} else this.endSession(message.stopCasting === true);
+				// The phone leaving for another device connects to it only once this connection is closed (checked with
+				// TIDAL Android 2026-11: left open, it stays "connecting" on this receiver). Closed after the answers above
+				return this.closePhone(socket);
 		}
 		const waiting = this.waiting.get(socket);
 		if (waiting !== undefined) {
